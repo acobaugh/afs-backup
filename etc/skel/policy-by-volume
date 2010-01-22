@@ -1,0 +1,5 @@
+# regex list of volume names and policies, separated by a space
+# if policy-by-path gives a different policy, policy-order is consulted
+# first line that matches is used
+# if no policy is found, policy-default is consulted
+

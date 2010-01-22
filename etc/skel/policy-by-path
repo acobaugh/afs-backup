@@ -1,0 +1,7 @@
+# regex list of absolute mountpoint paths and policy, separated by a space
+# paths that match that aren't mountpoints are ignored
+# all mountpoints found below a given match are assumed to use the same policy
+# if policy-by-volume gives a different policy, policy-order is consulted
+# first path that matches is used
+# if no policy is found, policy-default is consulted
+

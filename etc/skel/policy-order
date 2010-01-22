@@ -1,0 +1,3 @@
+# Settles discrepancies between policy-by-path and policy-by-volume
+# keywords 'path' and 'volume', on separate lines, with the preferred
+# policy first

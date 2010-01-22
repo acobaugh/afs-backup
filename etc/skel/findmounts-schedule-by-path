@@ -1,0 +1,2 @@
+# schedule to run afs-find-mounts to update the mounts-by-path and mounts-by-volume database
+# standard cron syntax, with the last field being the top-level path to search
