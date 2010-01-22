@@ -401,7 +401,7 @@ sub mode_find_mounts {
 		print "Mounts will be put in $afsbackup/var/mounts/$filename-* and mounts-by-* will be updated\n";
 	}
 	cmd("rm -f $afsbackup/var/mounts/$filename*");
-	cmd("$afsbackup/bin/afs-find-mounts.pl -lm $path $afsbackup/var/mounts/$filename");
+	cmd("afs-find-mounts.pl -lm $path $afsbackup/var/mounts/$filename");
 	cmd("cat $afsbackup/var/mounts/*-by-mount > $afsbackup/var/mounts/mounts-by-path 2>/dev/null");
 	cmd("cat $afsbackup/var/mounts/*-by-volume > $afsbackup/var/mounts/mounts-by-volume 2>/dev/null");
 
