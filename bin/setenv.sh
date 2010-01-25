@@ -18,4 +18,4 @@ popd  > /dev/null
 
 export AFSBACKUP="`dirname $SCRIPT_PATH`"
 
-$1
+$@
