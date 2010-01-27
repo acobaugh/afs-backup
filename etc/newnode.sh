@@ -5,8 +5,8 @@ if [ -z "$1" ]; then
 	exit 1
 fi
 
-if [ -d "nodes/$1" ]; then
-	echo "nodes/$1 already exists, exiting."
+if [ -d "hosts/$1" ]; then
+	echo "hosts/$1 already exists, exiting."
 	exit 1
 fi
 
