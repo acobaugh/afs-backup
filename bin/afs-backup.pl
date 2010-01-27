@@ -283,8 +283,13 @@ sub mode_tsm {
 	# and skips those paths that we don't want to backup
 	# %nobackup was an afterthought, should probably rethink
 	for ($i = 0; $i <= $#backup; $i++) {
-		if ($nobackup{$backup[$i]} ne 1) {
-			$backup_hash{$backup[$i]} = 1;
+		$volume = $mounts_by_path{$backup[$i]}{'volume'};
+		printf "volume = $volume : %s\n", $backup[$i];
+		if ($nobackup{$backup[$i]} ne 1 # we don't not want to backup
+				and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
+					or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
+			)){
+			$backup_hash{$volume} = $backup[$i];
 		}
 	}
 	
@@ -296,7 +301,7 @@ sub mode_tsm {
 	# determine management class to use
 	foreach $tmp (split(/\s+/, $config{'tsm-policy-order'})) {
 		if ($tmp eq 'path') {
-			foreach $path (keys %backup_hash) {
+			foreach $path (%backup_hash) {
 				# run through tsm-policy-by-path in reverse order
 				for ($i = $#{$config{'tsm-policy-by-path'}}; $i >= 0; $i--) {
 					if ($path =~ m/$config{'tsm-policy-by-path'}[$i]{'k'}/) {
@@ -309,7 +314,7 @@ sub mode_tsm {
 			}
 		}
 		if ($tmp eq 'volume') {
-			foreach $path (keys %backup_hash) {
+			foreach $path (%backup_hash) {
 				# run through tsm-policy-by-path in reverse order
 				for ($i = $#{$config{'tsm-policy-by-volume'}}; $i >= 0; $i--) {
 					if ($mounts_by_path{$path}{'volume'} =~ m/$config{'tsm-policy-by-volume'}[$i]{'k'}/) {
@@ -324,10 +329,11 @@ sub mode_tsm {
 	}
 
 	if (!$opt_quiet) {
-		print "\nPaths/mountpoints to backup:\n";
+		print "\n=== Paths/mountpoints to backup ===\n";
 		print "PATH | VOLUME | MGMTCLASS\n";
-		foreach (sort { length $a <=> length $b || $a cmp $b } keys %backup_hash) {
-			printf "%s | %s | %s\n", $_, $mounts_by_path{$_}{'volume'}, $policy{$_};
+		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
+			keys %backup_hash) {
+			printf "%s | %s | %s\n", $backup_hash{$_}, $_, $policy{$backup_hash{$_}};
 		}
 	}
 
@@ -349,13 +355,12 @@ sub mode_tsm {
 	# vos backup if not
 	# then mount each volume
 	if (!$opt_quiet) {
-		print "Creating .backup volumes if needed, and mounting .backup volumes\n";
+		print "\n=== Creating .backup volumes if needed, and mounting .backup volumes ===\n";
 	}
 	foreach $tmp (keys %backup_hash) {
-		print "path: $tmp\n";
 		if (! cmd("vos exam $mounts_by_path{$tmp}{'volume'}.backup >/dev/null 2>&1") ){
 			if ($opt_verbose) {
-				printf "No backup volume for %s\n", $mounts_by_path{$tmp}{'volume'};
+				printf "No backup volume for %s. Will attempt to create.\n", $mounts_by_path{$tmp}{'volume'};
 				cmd("vos backup $mounts_by_path{$tmp}{'volume'}");
 			}
 		}
@@ -364,11 +369,11 @@ sub mode_tsm {
 	}
 
 	# dump vldb
-	print "Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date\n";
+	print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
 	cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
 
 	# dump acls
-	print "Dumping ACLs\n";
+	print "\n=== Dumping ACLs ===\n";
 	foreach $tmp (keys %backup_hash) {
 		printf "%s (%s)\n", $tmp, $mounts_by_path{$tmp}{'volume'};
 		$volume = $mounts_by_path{$tmp}{'volume'};
@@ -376,7 +381,7 @@ sub mode_tsm {
 	}
 
 	# run dsmc incremental
-	print "Running dsmc incremental\n";
+	print "\n=== Running dsmc incremental ===\n";
 	cmd("mv $afsbackup/var/log/dsmc.log.$tsmnode $afsbackup/var/log/dsmc.log.$tsmnode.last ; 
 		mv $afsbackup/var/log/dsmc.error.$tsmnode $afsbackup/var/log/dsmc.error.$tsmnode.last");
 
