@@ -509,10 +509,10 @@ sub mode_vosbackup {
 
 	if (!$opt_quiet) {
 		print "\n=== volumes to vos backup ===\n";
-		print "VOLUME | PATH (first found)\n";
+		print "VOLUME\n";
 		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
 			keys %backup_hash) {
-			printf "%s | %s | %s\n", $_, ((keys %mounts_by_volume{$_}{'paths'})[0]);
+			printf "%s\n", $_;
 		}
 	}
 } # END sub mode_vosbackup()
