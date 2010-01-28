@@ -551,7 +551,7 @@ sub cmd {
 	} else {
 		while (<OUT>)
 		{
-			if ($opt_verbose eq 1) {
+			if (! $opt_quiet) {
 				print "$_";
 			}
 			push (@output, $_);
