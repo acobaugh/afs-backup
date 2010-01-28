@@ -510,7 +510,7 @@ sub mode_vosbackup {
 	if (!$opt_quiet) {
 		print "\n=== volumes to vos backup ===\n";
 		print "VOLUME\n";
-		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
+		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} keys $backup_hash}
 			keys %backup_hash) {
 			printf "%s\n", $_;
 		}
