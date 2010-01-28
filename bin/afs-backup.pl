@@ -106,6 +106,10 @@ if ($mode eq 'tsm') {
 	print "\nRequested mode TSM\n";
 	mode_tsm();
 	exit 0;
+} elsif ($mode eq 'vosbackup') {
+	print "\nRequested mode vosbackup\n";
+	mode_vosbackup();
+	exit 0;
 } else {
 	print "\nInvalid mode: $mode\n\n";
 	exit 1;
@@ -139,6 +143,20 @@ sub mode_tsm {
 			}
 		}
 	}
+	
+	# what to backup into tsm
+	foreach $file ('tsm-backup-by-path', 'tsm-backup-by-volume') {
+		$i = 0;
+		foreach ('common', "hosts/$shorthostname") {
+			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
+			if (@tmp_array) {
+				foreach (@tmp_array) {
+					$config{$file}[$i] = $_;
+					$i++;
+				}
+			}
+		}
+	}
 
 	# policies (management classes)
 	foreach $file ('tsm-policy-by-path', 'tsm-policy-by-volume') {
@@ -158,19 +176,6 @@ sub mode_tsm {
 		}
 	}
 
-	# what to backup into tsm
-	foreach $file ('tsm-backup-by-path', 'tsm-backup-by-volume') {
-		$i = 0;
-		foreach ('common', "hosts/$shorthostname") {
-			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
-			if (@tmp_array) {
-				foreach (@tmp_array) {
-					$config{$file}[$i] = $_;
-					$i++;
-				}
-			}
-		}
-	}
 
 	# spit out debugging info about configuration
 	if ($opt_verbose) {
@@ -412,6 +417,105 @@ sub mode_find_mounts {
 
 }
 
+sub mode_vosbackup {
+	# what to vos backup
+	foreach $file ('vosbackup-by-path', 'vosbackup-by-volume') {
+		$i = 0;
+		foreach ('common', "hosts/$shorthostname") {
+			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
+			if (@tmp_array) {
+				foreach (@tmp_array) {
+					$config{$file}[$i] = $_;
+					$i++;
+				}
+			}
+		}
+	}
+
+	# spit out debugging info about configuration
+	if ($opt_verbose) {
+		print "\n=== vos backup configuration (\$config) ===\n";
+
+		foreach ('vosbackup-by-path', 'vosbackup-by-volume') {
+			print "\n$_ =\n";
+			$i = 0;
+			for ($i = 0; $i <= $#{$config{$_}}; $i++) {
+				printf "\t$i = %s\n", $config{$_}[$i];
+			}
+		}
+	}
+
+	# determine what to vos backup by path
+	foreach $path (keys %mounts_by_path) {
+		next if $mounts_by_path{$path}{'type'} ne '#';
+		$volume = $mounts_by_path{$path}{'volume'};
+		for ($i = 0; $i <= $#{$config{'vosbackup-by-path'}}; $i++) {
+			$tmp = $config{'vosbackup-by-path'}[$i];
+			$exclude_from_backup = 0;
+			if ($tmp =~ m/^\!/) {
+				$exclude_from_backup = 1;
+				$tmp =~ s/^\!//;
+			}
+			if ($tmp !~ /^\//) {
+				$tmp = $config{'basepath'} . '/' . $tmp;
+			}
+			$path =~ s/\/+/\//; # get rid of duplicate /'s
+			$path =~ s/\/$//; # remove any trailing /'s
+			$tmp =~ s/\/+/\//; # get rid of duplicate /'s
+			$tmp =~ s/\/$//; # remove any trailing /'s
+			if ($path =~ m/$tmp/) {
+				if ($exclude_from_backup) {
+					$nobackup{$volume} = 1;
+				} else {
+					push @backup, $volume;
+				}
+			}
+		}
+	}
+
+	# determine what to backup by volume
+	foreach $volume (keys %mounts_by_volume) {
+		for ($i = 0; $i <= $#{$config{'vosbackup-by-volume'}}; $i++) {
+			$tmp = $config{'vosbackup-by-volume'}[$i]; # looping this way ensures $tmp is a copy
+			$exclude_from_backup = 0;
+			if ($tmp =~ m/^\!/) {
+				$exclude_from_backup = 1;
+				$tmp =~ s/^\!//;
+			}
+			if ($volume =~ m/$tmp/) {
+				# get the first 'normal' mount
+				if ($exclude_from_backup) {
+					$nobackup{$volume} = 1;
+				} else {
+					push @backup, $volume;
+				}
+			}
+		}
+	}
+	
+	# this seems kinda more kludgy than usual. Removes duplicates
+	# and skips those paths that we don't want to backup
+	# %nobackup was an afterthought, should probably rethink
+	for ($i = 0; $i <= $#backup; $i++) {
+		$volume = $backup[$i];
+		if ($nobackup{$volume} ne 1 # we don't not want to backup
+				and (length($backup_hash{$volume}) eq 0) # and we don't have this volume yet
+			) {
+			$backup_hash{$volume} = 1;
+		}
+	}
+
+	if (!$opt_quiet) {
+		print "\n=== volumes to vos backup ===\n";
+		print "VOLUME | PATH (first found)\n";
+		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
+			keys %backup_hash) {
+			printf "%s | %s | %s\n", $_, $mounts_by_volume{$_}[0]{'path'};
+		}
+	}
+} # END sub mode_vosbackup()
+
+
 #
 # miscellaneous functions
 #
@@ -540,7 +644,7 @@ sub read_mounts_by_path {
 	}
 	return %return;
 }
-		
+
 
 __END__
 
