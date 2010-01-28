@@ -418,6 +418,8 @@ sub mode_find_mounts {
 }
 
 sub mode_vosbackup {
+	my ($exclude_from_backup, @backup, %backup_hash, %nobackup);
+	
 	# what to vos backup
 	foreach $file ('vosbackup-by-path', 'vosbackup-by-volume') {
 		$i = 0;
