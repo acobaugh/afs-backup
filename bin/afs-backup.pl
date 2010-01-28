@@ -514,6 +514,17 @@ sub mode_vosbackup {
 			printf "%s\n", $_;
 		}
 	}
+
+	print "\n=== running vos backup ===\n";
+	# actually run the vos backup command
+	foreach (sort keys %backup_hash) {
+		if (!$opt_quiet) {
+			print "vos backup $_\n";
+		}
+		if (!cmd("vos backup $_")) {
+			print "\tfailed\n";
+		}
+	}
 } # END sub mode_vosbackup()
 
 
