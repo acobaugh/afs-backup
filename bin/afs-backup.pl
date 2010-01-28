@@ -512,7 +512,7 @@ sub mode_vosbackup {
 		print "VOLUME | PATH (first found)\n";
 		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
 			keys %backup_hash) {
-			printf "%s | %s | %s\n", $_, $mounts_by_volume{$_}[0]{'path'};
+			printf "%s | %s | %s\n", $_, (keys %mounts_by_volume{$_}{'paths'})[0];
 		}
 	}
 } # END sub mode_vosbackup()
