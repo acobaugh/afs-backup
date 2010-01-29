@@ -3,9 +3,6 @@
 # $Id$
 
 use strict;
-use File::Find;
-use Cwd;
-#use String::ShellQuote;
 use Getopt::Long;
 use Sys::Hostname;
 
