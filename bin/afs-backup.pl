@@ -291,7 +291,6 @@ sub mode_tsm {
 	# %nobackup was an afterthought, should probably rethink
 	for ($i = 0; $i <= $#backup; $i++) {
 		$volume = $mounts_by_path{$backup[$i]}{'volume'};
-		printf "volume = $volume : %s\n", $backup[$i];
 		if ($nobackup{$backup[$i]} ne 1 # we don't not want to backup
 				and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
 					or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
@@ -364,27 +363,34 @@ sub mode_tsm {
 	if (!$opt_quiet) {
 		print "\n=== Creating .backup volumes if needed, and mounting .backup volumes ===\n";
 	}
-	foreach $tmp (keys %backup_hash) {
-		if (! cmd("vos exam $mounts_by_path{$tmp}{'volume'}.backup >/dev/null 2>&1") ){
+	foreach $tmp (sort keys %backup_hash) {
+		if (!$opt_quiet) {
+			print "Checking for $tmp.backup ...\n";
+		}
+		if (! cmd("vos exam $tmp.backup >/dev/null 2>&1") ){
 			if ($opt_verbose) {
-				printf "No backup volume for %s. Will attempt to create.\n", $mounts_by_path{$tmp}{'volume'};
-				cmd("vos backup $mounts_by_path{$tmp}{'volume'}");
+				printf "No backup volume for %s. Will attempt to create.\n", $tmp;
+				cmd("vos backup $tmp");
 			}
 		}
-		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$mounts_by_path{$tmp}{'volume'}");
-		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$mounts_by_path{$tmp}{'volume'} $mounts_by_path{$tmp}{'volume'}.backup");
 	}
 
+	foreach $tmp (sort keys %backup_hash) {
+		if (!$opt_quiet) {
+			print "Mounting $tmp.backup\n";
+		}
+		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
+		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp.backup");
+	}
 	# dump vldb
 	print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
 	cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
 
 	# dump acls
 	print "\n=== Dumping ACLs ===\n";
-	foreach $tmp (keys %backup_hash) {
-		printf "%s (%s)\n", $tmp, $mounts_by_path{$tmp}{'volume'};
-		$volume = $mounts_by_path{$tmp}{'volume'};
-		cmd("find $config{'tsm-backup-tmp-mount-path'}/$volume -type d -exec fs listacl {} \\; > $afsbackup/var/acl/$volume");
+	foreach $tmp (sort keys %backup_hash) {
+		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
+		cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -type d -exec fs listacl {} \\; > $afsbackup/var/acl/$tmp");
 	}
 
 	# run dsmc incremental
@@ -392,11 +398,10 @@ sub mode_tsm {
 	cmd("mv $afsbackup/var/log/dsmc.log.$tsmnode $afsbackup/var/log/dsmc.log.$tsmnode.last ; 
 		mv $afsbackup/var/log/dsmc.error.$tsmnode $afsbackup/var/log/dsmc.error.$tsmnode.last");
 
-	foreach $tmp (keys %backup_hash) {
-		printf "%s (%s)\n", $tmp, $mounts_by_path{$tmp}{'volume'};
-		$volume = $mounts_by_path{$tmp}{'volume'};
-		cmd("dsmc incremental $tmp -snapshotroot=$config{'tsm-backup-tmp-mount-path'}/$volume 
-			>>$afsbackup/var/log/dsmc.log.$tsmnode 2>>$afsbackup/var/log/dsmc.error.$tsmnode");
+	foreach $tmp (sort keys %backup_hash) {
+		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
+		#cmd("dsmc incremental $backup_hash{$tmp} -snapshotroot=$config{'tsm-backup-tmp-mount-path'}/$tmp
+		#	>>$afsbackup/var/log/dsmc.log.$tsmnode 2>>$afsbackup/var/log/dsmc.error.$tsmnode");
 	}
 
 } # END mode_tsm()
@@ -536,7 +541,7 @@ sub mode_vosbackup {
 
 sub cmd {
 	my @command = @_;
-	my (@output, $status, $starttime);
+	my (@output, $status, $starttime, $delta_t);
 
 	if ($opt_pretend) {
 		printf "[cmd] %s\n", @command;
@@ -565,7 +570,10 @@ sub cmd {
 		$status = $?;
 		close OUT;
 		if ($opt_timing) {
-			printf "(%s s)\n", time - $starttime;
+			$delta_t = time - $starttime;
+			if ($delta_t > 5) {
+				printf "(%s s)\n", time - $starttime;
+			}
 		}
 	}
 	return ($status == 0);
