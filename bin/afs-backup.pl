@@ -19,6 +19,7 @@ GetOptions(
 	'q|quiet' => \(my $opt_quiet = 0),
 	'p|pretend' => \(my $opt_pretend = 0),
 	'm|mode=s' => \(my $mode = 'none'),
+	't|timing' => \(my $opt_timing = 0),
 	'tsm-node-name=s' => \(my $tsmnode = $hostname),
 	'force-hostname=s' => \($hostname = $hostname)
 );
@@ -40,7 +41,7 @@ if ($opt_help) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
 } elsif ($mode eq "none" or $afsbackup eq "") {
-	print "Usage: $0 [-h|--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [--tsm-node-name NODENAME] [--force-hostname HOSTNAME]\n
+	print "Usage: $0 [-h|--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--tsm-node-name NODENAME] [--force-hostname HOSTNAME]\n
 	-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
 	print "AFSBACKUP must also be defined\n\n";
 	exit 0;
@@ -536,7 +537,10 @@ sub cmd {
 	if ($opt_pretend) {
 		printf "[cmd] %s\n", @command;
 		return 1;
+	} elsif ($opt_timing) {
+		my $starttime = time();
 	}
+
 	$| = 1;
 	my $pid = open (OUT, '-|');
 	if (!defined $pid)
@@ -544,7 +548,7 @@ sub cmd {
 		die "unable to fork: $!";
 	} elsif ($pid eq 0) {
 		open (STDERR, '>&STDOUT') or die "cannot dup stdout: $!";
-		exec @command or die "cannot exec $command[0]: $!";
+		exec @command or print "cannot exec $command[0]: $!";
 	} else {
 		while (<OUT>)
 		{
@@ -556,6 +560,9 @@ sub cmd {
 		#waitpid ($pid, 0);
 		$status = $?;
 		close OUT;
+		if ($opt_timing) {
+			printf "(%s s)\n", time - $starttime;
+		}
 	}
 	return ($status == 0);
 }
