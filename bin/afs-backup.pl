@@ -70,6 +70,8 @@ if ($opt_verbose) {
 	}
 }
 
+my $total_starttime = time();
+
 # read in mounts-by-path and mounts-by-volume
 if ($mode ne 'find-mounts') {
 	# mounts-by-foo is created either weekly or nightly, probably weekly
@@ -90,27 +92,29 @@ if ($mode ne 'find-mounts') {
 			}
 		}
 	}
-} else {
-	print "Requested mode find-mounts\n";
-	if (@ARGV ne 1 or $ARGV[0] !~ /^\//) {
-		print "-m find-mounts takes one argument: absolute path to traverse\n\n";
-		exit 1
-	}
-	mode_find_mounts($ARGV[0]);
-	exit 0;
 }
 
+# switch over $mode
 if ($mode eq 'tsm') {
 	print "\nRequested mode TSM\n";
 	mode_tsm();
-	exit 0;
 } elsif ($mode eq 'vosbackup') {
 	print "\nRequested mode vosbackup\n";
 	mode_vosbackup();
-	exit 0;
+} elsif ($mode eq 'find-mounts') {
+	print "\nRequested mode find-mounts\n";
+	if (@ARGV ne 1 or $ARGV[0] !~ /^\//) {
+		print "-m find-mounts takes one argument: absolute path to traverse\n\n";
+		exit 1;
+	}
+	mode_find_mounts($ARGV[0]);
 } else {
 	print "\nInvalid mode: $mode\n\n";
 	exit 1;
+}
+
+if ($opt_timing) {
+	printf "Execution time: %s s\n", time - $total_starttime;
 }
 
 exit 0;
