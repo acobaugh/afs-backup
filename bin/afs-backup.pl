@@ -215,7 +215,7 @@ sub mode_tsm {
 	cmd("cp $afsbackup/etc/common/dsm.sys.head $dsmsys");
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
 
-	if ( -e "$dsmsys" ) {
+	if ( -e "$dsmsys" || $opt_pretend) {
 		open (HANDLE, '>>', $dsmsys);
 		print HANDLE "INCLEXCL $inclexcl\n";
 		# virtualmounts based on all afs mount points
