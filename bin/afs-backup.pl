@@ -247,7 +247,7 @@ sub mode_tsm {
 			$tmp =~ s/\/$//; # remove any trailing /'s
 			if ($path =~ m/$tmp/) {
 				if ($exclude_from_backup) {
-					$nobackup{$path} = 1;
+					$nobackup{$mounts_by_path{$path}{'volume'}} = 1;
 				} else {
 					push @backup, $path;
 					if (! $nobackup{$path} ) {
@@ -272,7 +272,7 @@ sub mode_tsm {
 				foreach (keys %{$mounts_by_volume{$volume}{'paths'}}) {
 					if ($mounts_by_volume{$volume}{'paths'}{$_} eq '#') {
 						if ($exclude_from_backup) {
-							$nobackup{$_} = 1;
+							$nobackup{$volume} = 1;
 						} else {
 							push @backup, $_;
 							if (! $nobackup{$path} ) {
@@ -291,7 +291,7 @@ sub mode_tsm {
 	# %nobackup was an afterthought, should probably rethink
 	for ($i = 0; $i <= $#backup; $i++) {
 		$volume = $mounts_by_path{$backup[$i]}{'volume'};
-		if ($nobackup{$backup[$i]} ne 1 # we don't not want to backup
+		if ($nobackup{$volume} ne 1 # we don't not want to backup
 				and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
 					or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
 			)){
@@ -349,14 +349,14 @@ sub mode_tsm {
 	}
 	# per-path management class
 	print HANDLE "\n* per-path management classes\n";
-	foreach (sort { length $a <=> length $b || $a cmp $b } keys %backup_hash) {
+	foreach (sort { length $a <=> length $b || $a cmp $b } %backup_hash) {
 		if ($policy{$_} ne '') {
 			printf HANDLE "INCLUDE %s/* %s\n", $_, $policy{$_};
 			printf HANDLE "INCLUDE %s/.../* %s\n", $_, $policy{$_};
 		}
 	}
 	close (HANDLE); # close dsm.sys.$tsmnode
-
+exit 0;
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
 	# then mount each volume
@@ -390,7 +390,8 @@ sub mode_tsm {
 	print "\n=== Dumping ACLs ===\n";
 	foreach $tmp (sort keys %backup_hash) {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -type d -exec fs listacl {} \\; > $afsbackup/var/acl/$tmp");
+		cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \\; >
+			$afsbackup/var/acl/$tmp 2>/dev/null");
 	}
 
 	# run dsmc incremental
