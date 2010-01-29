@@ -532,13 +532,13 @@ sub mode_vosbackup {
 
 sub cmd {
 	my @command = @_;
-	my (@output, $status);
+	my (@output, $status, $starttime);
 
 	if ($opt_pretend) {
 		printf "[cmd] %s\n", @command;
 		return 1;
 	} elsif ($opt_timing) {
-		my $starttime = time();
+		$starttime = time();
 	}
 
 	$| = 1;
