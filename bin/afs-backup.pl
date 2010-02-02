@@ -21,8 +21,15 @@ GetOptions(
 	'm|mode=s' => \(my $mode = 'none'),
 	't|timing' => \(my $opt_timing = 0),
 	'tsm-node-name=s' => \(my $tsmnode = $hostname),
-	'force-hostname=s' => \($hostname = $hostname)
+	'force-hostname=s' => \($hostname = $hostname),
+	'no-dump-acl' => \(my $opt_nodumpacl = 0),
+	'no-dsmc' => \(my $opt_nodsmc = 0),
 );
+
+my $vosbackup_cmd = 'vos backup';
+if (defined($ENV{'VOSBACKUP_CMD'})) {
+	$vosbackup_cmd = $ENV{'VOSBACKUP_CMD'};
+}
 
 my $shorthostname = $hostname;
 $shorthostname =~ s/\..*//;
@@ -41,9 +48,12 @@ if ($opt_help) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
 } elsif ($mode eq "none" or $afsbackup eq "") {
-	print "Usage: $0 [-h|--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--tsm-node-name NODENAME] [--force-hostname HOSTNAME]\n
-	-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
-	print "AFSBACKUP must also be defined\n\n";
+	print "Usage: $0 [-h|--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]\n";
+	print "-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
+	print "tsm options:\n";
+	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
+	print "\t[--no-dump-acl] -- Don't recursively dump acls\n";
+	print "\nAFSBACKUP environment variable must also be defined\n\n";
 	exit 0;
 }
 
@@ -121,7 +131,7 @@ exit 0;
 
 # TSM mode
 sub mode_tsm {
-	my (%policy, $exclude_from_backup, @backup, %backup_hash, %nobackup);
+	my (%policy, $exclude_from_backup, @backup, %backup_hash, %nobackup, $command);
 
 	if (!$opt_quiet) {
 		print "TSM Node: $tsmnode\n";
@@ -130,7 +140,8 @@ sub mode_tsm {
 	my @configfiles_single = (
 		'tsm-policy-default',
 		'tsm-policy-order',
-		'tsm-backup-tmp-mount-path'
+		'tsm-backup-tmp-mount-path',
+		'tsm-inclexcl-path'
 	);
 
 	##
@@ -204,7 +215,7 @@ sub mode_tsm {
 	}
 
 	# set up exclude.list
-	my $inclexcl = "$afsbackup/var/tmp/exclude.$tsmnode";
+	my $inclexcl = $config{'tsm-inclexcl-path'};
 	cmd("rm -f $inclexcl");
 	cmd("cp $afsbackup/etc/common/exclude.list $inclexcl");
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $inclexcl");
@@ -215,13 +226,16 @@ sub mode_tsm {
 	cmd("cp $afsbackup/etc/common/dsm.sys.head $dsmsys");
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
 
-	if ( -e "$dsmsys" || $opt_pretend) {
+	if ( -e "$dsmsys" or $opt_pretend) {
 		open (HANDLE, '>>', $dsmsys);
-		print HANDLE "INCLEXCL $inclexcl\n";
+		#print HANDLE "INCLEXCL $inclexcl\n";
 		# virtualmounts based on all afs mount points
 		printf HANDLE "VirtualMountPoint %s\n", $config{'basepath'};
+		printf HANDLE "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
-			printf HANDLE "VirtualMountPoint %s\n", $_;
+			$_ =~ s/$config{'basepath'}//;
+			printf HANDLE "VirtualMountPoint %s\n", 
+				$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $_ ;
 		}
 	} else {
 		print "Failed to create $dsmsys. This shouldn't happen.\n";
@@ -343,6 +357,11 @@ sub mode_tsm {
 		}
 	}
 
+	foreach (sort keys %backup_hash) {
+		printf HANDLE "VirtualMountPoint %s\n", 
+			$config{'tsm-backup-tmp-mount-path'} . '/' . $_;
+	}
+
 	# default management class
 	if ($config{'tsm-policy-default'} ne "") {
 		printf HANDLE "\n* Default management class (policy-default)\ninclude * %s\n\n", $config{'tsm-policy-default'};
@@ -356,12 +375,17 @@ sub mode_tsm {
 		}
 	}
 	close (HANDLE); # close dsm.sys.$tsmnode
-exit 0;
+
+	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys") ){
+		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
+		exit 1
+	}
+	
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
 	# then mount each volume
 	if (!$opt_quiet) {
-		print "\n=== Creating .backup volumes if needed, and mounting .backup volumes ===\n";
+		print "\n=== Creating .backup volumes if needed ===\n";
 	}
 	foreach $tmp (sort keys %backup_hash) {
 		if (!$opt_quiet) {
@@ -370,28 +394,32 @@ exit 0;
 		if (! cmd("vos exam $tmp.backup >/dev/null 2>&1") ){
 			if ($opt_verbose) {
 				printf "No backup volume for %s. Will attempt to create.\n", $tmp;
-				cmd("vos backup $tmp");
+				cmd("$vosbackup_cmd $tmp");
 			}
 		}
 	}
 
-	foreach $tmp (sort keys %backup_hash) {
-		if (!$opt_quiet) {
-			print "Mounting $tmp.backup\n";
-		}
-		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
-		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp.backup");
-	}
+#	foreach $tmp (sort keys %backup_hash) {
+#		if (!$opt_quiet) {
+#			print "Mounting BK volume for $tmp\n";
+#		}
+#		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
+#		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp.backup");
+#	}
+
+	cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/root.cell >/dev/null 2>&1");
+	cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/root.cell root.cell.backup");
 	# dump vldb
 	print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
 	cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
 
 	# dump acls
-	print "\n=== Dumping ACLs ===\n";
-	foreach $tmp (sort keys %backup_hash) {
-		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \\; >
-			$afsbackup/var/acl/$tmp 2>/dev/null");
+	if (!$opt_nodumpacl) {
+		print "\n=== Dumping ACLs ===\n";
+		foreach $tmp (sort keys %backup_hash) {
+			printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
+			cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \; > $afsbackup/var/acl/$tmp 2>/dev/null");
+		}
 	}
 
 	# run dsmc incremental
@@ -401,8 +429,18 @@ exit 0;
 
 	foreach $tmp (sort keys %backup_hash) {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		#cmd("dsmc incremental $backup_hash{$tmp} -snapshotroot=$config{'tsm-backup-tmp-mount-path'}/$tmp
-		#	>>$afsbackup/var/log/dsmc.log.$tsmnode 2>>$afsbackup/var/log/dsmc.error.$tsmnode");
+		m/$config{'basepath'}(.+)/;
+		$path = $config{'tsm-backup-tmp-mount-path'} . $1;
+		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>>%s",
+			$backup_hash{$tmp}, 
+			$path,
+			$afsbackup . '/var/log/dsmc.log.' . $tsmnode,
+			$afsbackup . '/var/log/dsmc.error.' . $tsmnode);
+		if (!$opt_nodsmc) {
+			cmd($command);
+		} else {
+			print "$command\n";
+		}
 	}
 
 } # END mode_tsm()
@@ -527,9 +565,9 @@ sub mode_vosbackup {
 	# actually run the vos backup command
 	foreach (sort keys %backup_hash) {
 		if (!$opt_quiet) {
-			print "vos backup $_\n";
+			print "$vosbackup_cmd $_\n";
 		}
-		if (!cmd("vos backup $_")) {
+		if (!cmd("$vosbackup_cmd $_")) {
 			print "\tfailed\n";
 		}
 	}
