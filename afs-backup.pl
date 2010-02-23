@@ -24,6 +24,7 @@ GetOptions(
 	'force-hostname=s' => \($hostname = $hostname),
 	'no-dump-acl' => \(my $opt_nodumpacl = 0),
 	'no-dsmc' => \(my $opt_nodsmc = 0),
+	'no-dumpvldb' => \(my $opt_nodumpvldb = 0)
 );
 
 my $vosbackup_cmd = 'vos backup';
@@ -376,7 +377,7 @@ sub mode_tsm {
 	}
 	close (HANDLE); # close dsm.sys.$tsmnode
 
-	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys") ){
+	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")){
 		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
 		exit 1
 	}
@@ -389,11 +390,11 @@ sub mode_tsm {
 	}
 	foreach $tmp (sort keys %backup_hash) {
 		if (!$opt_quiet) {
-			print "Checking for $tmp.backup ...\n";
+			print "Checking for BK volume for $tmp ...\n";
 		}
-		if (! cmd("vos exam $tmp.backup >/dev/null 2>&1") ){
+		if (! cmd("vos exam $tmp.backup >/dev/null 2>&1")) {
 			if ($opt_verbose) {
-				printf "No backup volume for %s. Will attempt to create.\n", $tmp;
+				print "No backup volume for $tmp. Will attempt to create.\n";
 				cmd("$vosbackup_cmd $tmp");
 			}
 		}
@@ -409,9 +410,12 @@ sub mode_tsm {
 
 	cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/root.cell >/dev/null 2>&1");
 	cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/root.cell root.cell.backup");
+
 	# dump vldb
-	print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
-	cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
+	if (!$opt_nodumpvldb) {
+		print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
+		cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
+	}
 
 	# dump acls
 	if (!$opt_nodumpacl) {
@@ -429,7 +433,7 @@ sub mode_tsm {
 
 	foreach $tmp (sort keys %backup_hash) {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		m/$config{'basepath'}(.+)/;
+		$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
 		$path = $config{'tsm-backup-tmp-mount-path'} . $1;
 		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>>%s",
 			$backup_hash{$tmp}, 
