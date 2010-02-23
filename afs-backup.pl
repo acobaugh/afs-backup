@@ -234,6 +234,7 @@ sub mode_tsm {
 		printf HANDLE "VirtualMountPoint %s\n", $config{'basepath'};
 		printf HANDLE "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
+			printf HANDLE "VirtualMountPoint %s\n", $_;
 			$_ =~ s/$config{'basepath'}//;
 			printf HANDLE "VirtualMountPoint %s\n", 
 				$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $_ ;
@@ -434,7 +435,7 @@ sub mode_tsm {
 	foreach $tmp (sort keys %backup_hash) {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
 		$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
-		$path = $config{'tsm-backup-tmp-mount-path'} . $1;
+		$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
 		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>>%s",
 			$backup_hash{$tmp}, 
 			$path,
