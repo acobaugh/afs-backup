@@ -419,7 +419,7 @@ sub mode_tsm {
 			printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
 			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
 			cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp");
-			cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \\; > $afsbackup/var/acl/$tmp 2>/dev/null");
+			cmd("dumpacls.pl $config{'tsm-backup-tmp-mount-path'}/$tmp > $afsbackup/var/acl/$tmp 2>/dev/null");
 		}
 	}
 
