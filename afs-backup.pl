@@ -41,9 +41,9 @@ if ($afsbackup !~ m/^\//) {
 	exit 1;
 }
 
-print "\$afsbackup = $afsbackup\n";
-print "\$hostname = $hostname\n";
-print "\$shorthostname = $shorthostname\n";
+print "afsbackup = $afsbackup\n";
+print "hostname = $hostname\n";
+print "shorthostname = $shorthostname\n";
 
 if ($opt_help) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
@@ -142,7 +142,6 @@ sub mode_tsm {
 		'tsm-policy-default',
 		'tsm-policy-order',
 		'tsm-backup-tmp-mount-path',
-		'tsm-inclexcl-path'
 	);
 
 	##
@@ -215,11 +214,6 @@ sub mode_tsm {
 		}
 	}
 
-	# set up exclude.list
-	my $inclexcl = $config{'tsm-inclexcl-path'};
-	cmd("rm -f $inclexcl");
-	cmd("cp $afsbackup/etc/common/exclude.list $inclexcl");
-	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $inclexcl");
 
 	# start writing dsm.sys
 	my $dsmsys = "$afsbackup/var/tmp/dsm.sys.$tsmnode";
@@ -234,10 +228,12 @@ sub mode_tsm {
 		printf HANDLE "VirtualMountPoint %s\n", $config{'basepath'};
 		printf HANDLE "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
-			printf HANDLE "VirtualMountPoint %s\n", $_;
-			$_ =~ s/$config{'basepath'}//;
-			printf HANDLE "VirtualMountPoint %s\n", 
-				$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $_ ;
+			if ($mounts_by_path{$_}{'volume'} !~ m/.+\.backup$/) {
+				printf HANDLE "VirtualMountPoint %s\n", $_;
+				$_ =~ s/$config{'basepath'}//;
+				printf HANDLE "VirtualMountPoint %s\n", 
+					$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $_ ;
+			}
 		}
 	} else {
 		print "Failed to create $dsmsys. This shouldn't happen.\n";
@@ -359,11 +355,6 @@ sub mode_tsm {
 		}
 	}
 
-	foreach (sort keys %backup_hash) {
-		printf HANDLE "VirtualMountPoint %s\n", 
-			$config{'tsm-backup-tmp-mount-path'} . '/' . $_;
-	}
-
 	# default management class
 	if ($config{'tsm-policy-default'} ne "") {
 		printf HANDLE "\n* Default management class (policy-default)\ninclude * %s\n\n", $config{'tsm-policy-default'};
@@ -376,6 +367,9 @@ sub mode_tsm {
 			printf HANDLE "INCLUDE %s/.../* %s\n", $_, $policy{$_};
 		}
 	}
+	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
+	cmd("cat $afsbackup/etc/common/exclude.list >> $dsmsys");
+	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
 	close (HANDLE); # close dsm.sys.$tsmnode
 
 	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")){
@@ -423,7 +417,9 @@ sub mode_tsm {
 		print "\n=== Dumping ACLs ===\n";
 		foreach $tmp (sort keys %backup_hash) {
 			printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-			cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \; > $afsbackup/var/acl/$tmp 2>/dev/null");
+			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
+			cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp");
+			cmd("find $config{'tsm-backup-tmp-mount-path'}/$tmp -noleaf -type d -exec fs listacl {} \\; > $afsbackup/var/acl/$tmp 2>/dev/null");
 		}
 	}
 
@@ -436,7 +432,7 @@ sub mode_tsm {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
 		$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
 		$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
-		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>>%s",
+		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>&1",
 			$backup_hash{$tmp}, 
 			$path,
 			$afsbackup . '/var/log/dsmc.log.' . $tsmnode,
@@ -596,27 +592,25 @@ sub cmd {
 
 	$| = 1;
 	my $pid = open (OUT, '-|');
-	if (!defined $pid)
-	{
+	if (!defined $pid) {
 		die "unable to fork: $!";
 	} elsif ($pid eq 0) {
 		open (STDERR, '>&STDOUT') or die "cannot dup stdout: $!";
 		exec @command or print "cannot exec $command[0]: $!";
 	} else {
-		while (<OUT>)
-		{
+		while (<OUT>) {
 			if (! $opt_quiet) {
 				print "$_";
 			}
 			push (@output, $_);
 		}
-		#waitpid ($pid, 0);
+		waitpid ($pid, 0);
 		$status = $?;
 		close OUT;
 		if ($opt_timing) {
 			$delta_t = time - $starttime;
 			if ($delta_t > 5) {
-				printf "(%s s)\n", time - $starttime;
+				printf "(%s s)\n", $delta_t;
 			}
 		}
 	}
