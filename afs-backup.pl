@@ -1,11 +1,8 @@
 #!/usr/bin/perl 
 
-# $Id$
-
 use strict;
 use Getopt::Long;
 use Sys::Hostname;
-
 
 my ($tmp, @tmp_array, $file, %config, $i, $k, $v, $path);
 my ($mntpt, $type, $volume, $cell, %mounts_by_path, %mounts_by_volume);
@@ -14,7 +11,8 @@ my $hostname = hostname();
 
 Getopt::Long::Configure('bundling');
 GetOptions(
-	'h|help' => \(my $opt_help = 0),
+	'h' => \(my $opt_h = 0),
+	'help' => \(my $opt_help = 0),
 	'v|verbose' => \(my $opt_verbose = 0),
 	'q|quiet' => \(my $opt_quiet = 0),
 	'p|pretend' => \(my $opt_pretend = 0),
@@ -41,20 +39,21 @@ if ($afsbackup !~ m/^\//) {
 	exit 1;
 }
 
-print "afsbackup = $afsbackup\n";
-print "hostname = $hostname\n";
-print "shorthostname = $shorthostname\n";
 
 if ($opt_help) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
-} elsif ($mode eq "none" or $afsbackup eq "") {
-	print "Usage: $0 [-h|--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]\n";
+} elsif ($mode eq "none" or $afsbackup eq "" or $opt_h) {
+	print "Usage: $0 [-h] [--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]\n";
 	print "-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
 	print "tsm options:\n";
 	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
 	print "\t[--no-dumpacl] -- Don't recursively dump acls\n";
-	print "\nAFSBACKUP environment variable must also be defined\n\n";
+	print "\t[--no-dumpvldb] -- Don't dump the VLDB\n\n";
+	print "Environment Variables:\n";
+	print "\tAFSBACKUP -- root directory containing etc/ and var/\n";
+	print "\tVOSBACKUP_CMD -- command to use to perform vos backup instead of 'vos backup'\n";
+	print "\n";
 	exit 0;
 }
 
@@ -74,8 +73,12 @@ foreach $file (@configfiles_single_common) {
 	}
 }
 
+print "afsbackup = $afsbackup\n";
+print "hostname = $hostname\n";
+print "shorthostname = $shorthostname\n";
+
 if ($opt_verbose) {
-	print "\n=== Common Configuration (\$config) ===\n";
+	print "\n=== Common Configuration ===\n";
 	foreach (@configfiles_single_common) {
 		printf "$_ = %s\n", $config{$_};
 	}
@@ -89,6 +92,10 @@ if ($mode ne 'find-mounts') {
 	%mounts_by_path = read_mounts_by_path("$afsbackup/var/mounts/mounts-by-path");
 	%mounts_by_volume = read_mounts_by_volume("$afsbackup/var/mounts/mounts-by-volume");
 
+	if (keys(%mounts_by_path) le 0 or keys(%mounts_by_volume) le 0) {
+		print "No mounts found! This is bad.\n";
+		exit 1;
+	}
 	if ($opt_verbose) {
 		print "Mounts by path:\n";
 		foreach (keys %mounts_by_path) {
@@ -105,20 +112,21 @@ if ($mode ne 'find-mounts') {
 	}
 }
 
+my $exit = 0;
 # switch over $mode
 if ($mode eq 'tsm') {
-	print "\nRequested mode TSM\n";
-	mode_tsm();
+	print "\nRequested mode tsm\n";
+	$exit = mode_tsm();
 } elsif ($mode eq 'vosbackup') {
 	print "\nRequested mode vosbackup\n";
-	mode_vosbackup();
+	$exit = mode_vosbackup();
 } elsif ($mode eq 'find-mounts') {
 	print "\nRequested mode find-mounts\n";
 	if (@ARGV ne 1 or $ARGV[0] !~ /^\//) {
 		print "-m find-mounts takes one argument: absolute path to traverse\n\n";
 		exit 1;
 	}
-	mode_find_mounts($ARGV[0]);
+	$exit = mode_find_mounts($ARGV[0]);
 } else {
 	print "\nInvalid mode: $mode\n\n";
 	exit 1;
@@ -128,9 +136,12 @@ if ($opt_timing) {
 	printf "Execution time: %s s\n", time - $total_starttime;
 }
 
-exit 0;
+print "$mode returned $exit\n";
+exit $exit;
 
-# TSM mode
+##
+## TSM mode
+##
 sub mode_tsm {
 	my (%policy, $exclude_from_backup, @backup, %backup_hash, %nobackup, $command);
 
@@ -379,7 +390,7 @@ sub mode_tsm {
 
 	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")){
 		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
-		exit 1
+		return 1;
 	}
 	
 	# make sure a .backup volume exists for every volume
@@ -447,6 +458,7 @@ sub mode_tsm {
 			$afsbackup . '/var/log/dsmc.log.' . $tsmnode,
 			$afsbackup . '/var/log/dsmc.error.' . $tsmnode);
 		if (!$opt_nodsmc) {
+			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
 		} else {
 			print "$command\n";
@@ -455,7 +467,10 @@ sub mode_tsm {
 
 } # END mode_tsm()
 
-# find-mounts mode
+
+##
+## find-mounts mode
+##
 sub mode_find_mounts {
 	($path) = @_;
 	$path =~ s/\/$//; # get rid of trailing /
@@ -466,13 +481,22 @@ sub mode_find_mounts {
 		print "Going to get mounts for $path\n";
 		print "Mounts will be put in $afsbackup/var/mounts/$filename-* and mounts-by-* will be updated\n";
 	}
-	cmd("rm -f $afsbackup/var/mounts/$filename*");
-	cmd("afs-find-mounts.pl -lm $path $afsbackup/var/mounts/$filename");
-	cmd("cat $afsbackup/var/mounts/*-by-mount > $afsbackup/var/mounts/mounts-by-path 2>/dev/null");
-	cmd("cat $afsbackup/var/mounts/*-by-volume > $afsbackup/var/mounts/mounts-by-volume 2>/dev/null");
+	if (cmd("afs-find-mounts.pl -lm $path $afsbackup/var/mounts/TMP-$filename")) {
+		cmd("mv $afsbackup/var/mounts/TMP-$filename-by-volume $afsbackup/var/mounts/$filename-by-volume");
+		cmd("mv $afsbackup/var/mounts/TMP-$filename-by-mount $afsbackup/var/mounts/$filename-by-mount");
 
-}
+		cmd("cat $afsbackup/var/mounts/*-by-mount > $afsbackup/var/mounts/mounts-by-path 2>/dev/null");
+		cmd("cat $afsbackup/var/mounts/*-by-volume > $afsbackup/var/mounts/mounts-by-volume 2>/dev/null");
+		return 0;
+	}
+	print "afs-find-mounts.pl failed for some reason\n";
+	return 1;
 
+} # END sub mode_find_mounts
+
+##
+## vosbackup mode
+##
 sub mode_vosbackup {
 	my ($exclude_from_backup, @backup, %backup_hash, %nobackup);
 	
@@ -571,6 +595,7 @@ sub mode_vosbackup {
 		}
 	}
 
+	my $return = 0;
 	print "\n=== running vos backup ===\n";
 	# actually run the vos backup command
 	foreach (sort keys %backup_hash) {
@@ -579,14 +604,16 @@ sub mode_vosbackup {
 		}
 		if (!cmd("$vosbackup_cmd $_")) {
 			print "\tfailed\n";
+			$return = 1;
 		}
 	}
+	return $return;
 } # END sub mode_vosbackup()
 
 
-#
-# miscellaneous functions
-#
+##
+## miscellaneous functions
+##
 
 sub cmd {
 	my @command = @_;
