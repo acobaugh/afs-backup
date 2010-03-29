@@ -22,7 +22,7 @@ GetOptions(
 	't|timing' => \(my $opt_timing = 0),
 	'tsm-node-name=s' => \(my $tsmnode = $hostname),
 	'force-hostname=s' => \($hostname = $hostname),
-	'no-dump-acl' => \(my $opt_nodumpacl = 0),
+	'no-dumpacl' => \(my $opt_nodumpacl = 0),
 	'no-dsmc' => \(my $opt_nodsmc = 0),
 	'no-dumpvldb' => \(my $opt_nodumpvldb = 0)
 );
@@ -53,7 +53,7 @@ if ($opt_help) {
 	print "-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
 	print "tsm options:\n";
 	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
-	print "\t[--no-dump-acl] -- Don't recursively dump acls\n";
+	print "\t[--no-dumpacl] -- Don't recursively dump acls\n";
 	print "\nAFSBACKUP environment variable must also be defined\n\n";
 	exit 0;
 }
@@ -228,11 +228,16 @@ sub mode_tsm {
 		printf HANDLE "VirtualMountPoint %s\n", $config{'basepath'};
 		printf HANDLE "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
-			if ($mounts_by_path{$_}{'volume'} !~ m/.+\.backup$/) {
-				printf HANDLE "VirtualMountPoint %s\n", $_;
-				$_ =~ s/$config{'basepath'}//;
+			next if ! -d $_; # skip mountpoints that we can't access
+			my $abspath = $_;
+			my $relative_path = $_;
+			printf HANDLE "VirtualMountPoint %s\n", $abspath;
+			$relative_path =~ s/$config{'basepath'}//;
+			# when using afsd -backuptree, don't define virtualm's for .backup mounts
+			# as they already don't exist
+			if ($mounts_by_path{$abspath}{'volume'} !~ m/.+\.backup$/) {
 				printf HANDLE "VirtualMountPoint %s\n", 
-					$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $_ ;
+					$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $relative_path ;
 			}
 		}
 	} else {
@@ -430,8 +435,12 @@ sub mode_tsm {
 
 	foreach $tmp (sort keys %backup_hash) {
 		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
-		$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
+		if ($backup_hash{$tmp} eq $config{'basepath'}) {
+			$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell';
+		} else {
+			$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
+			$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
+		}
 		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>&1",
 			$backup_hash{$tmp}, 
 			$path,
