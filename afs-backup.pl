@@ -425,7 +425,7 @@ sub mode_tsm {
 	# dump vldb
 	if (!$opt_nodumpvldb) {
 		print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
-		cmd("$afsbackup/bin/dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
+		cmd("dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
 	}
 
 	# dump acls
@@ -436,6 +436,7 @@ sub mode_tsm {
 			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
 			cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp");
 			cmd("dumpacls.pl $config{'tsm-backup-tmp-mount-path'}/$tmp > $afsbackup/var/acl/$tmp 2>/dev/null");
+			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
 		}
 	}
 
