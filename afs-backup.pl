@@ -22,7 +22,8 @@ GetOptions(
 	'force-hostname=s' => \($hostname = $hostname),
 	'no-dumpacl' => \(my $opt_nodumpacl = 0),
 	'no-dsmc' => \(my $opt_nodsmc = 0),
-	'no-dumpvldb' => \(my $opt_nodumpvldb = 0)
+	'no-dumpvldb' => \(my $opt_nodumpvldb = 0),
+	'no-lastbackup' => \(my $opt_nolastbackup = 0)
 );
 
 my $vosbackup_cmd = 'vos backup';
@@ -44,7 +45,7 @@ if ($opt_help) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
 } elsif ($mode eq "none" or $afsbackup eq "" or $opt_h) {
-	print "Usage: $0 [-h] [--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]\n";
+	print "Usage: $0 [-h] [--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]	[--no-lastbackup]\n";
 	print "-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
 	print "tsm options:\n";
 	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
@@ -581,10 +582,16 @@ sub mode_vosbackup {
 	# %nobackup was an afterthought, should probably rethink
 	for ($i = 0; $i <= $#backup; $i++) {
 		$volume = $backup[$i];
-		if ($nobackup{$volume} ne 1 # we don't not want to backup
-				and (length($backup_hash{$volume}) eq 0) # and we don't have this volume yet
-			) {
-			$backup_hash{$volume} = 1;
+		if (get_vol_updatedate($volume) gt get_lastbackup('vosbackup', $volume)) {
+			if ($nobackup{$volume} ne 1 # we don't not want to backup
+					and (length($backup_hash{$volume}) eq 0) # and we don't have this volume yet
+				) {
+				$backup_hash{$volume} = 1;
+			}
+		} else {
+			if (!$opt_quiet) {
+				print "Skipping volume $volume because it hasn't been updated since it was last backed up\n";
+			}
 		}
 	}
 
@@ -599,13 +606,15 @@ sub mode_vosbackup {
 	my $return = 0;
 	print "\n=== running vos backup ===\n";
 	# actually run the vos backup command
-	foreach (sort keys %backup_hash) {
+	foreach $volume (sort keys %backup_hash) {
 		if (!$opt_quiet) {
-			print "$vosbackup_cmd $_\n";
+			print "$vosbackup_cmd $volume\n";
 		}
-		if (!cmd("$vosbackup_cmd $_")) {
+		if (!cmd("$vosbackup_cmd $volume")) {
 			print "\tfailed\n";
 			$return = 1;
+		} else {
+			set_lastbackup('vosbackup', $volume);
 		}
 	}
 	return $return;
@@ -748,7 +757,42 @@ sub read_mounts_by_path {
 	return %return;
 }
 
+sub get_lastbackup {
+	my ($type, $volume) = @_;
+	my $file = $afsbackup . '/var/lastbackup/' . $volume . '.' . $type;
+	if ( -e "$file" and !$opt_nolastbackup) {
+		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
+		local $_;
+		while (<HANDLE>) {
+			next if /^\s*\#/; # skip comments
+			next if /^\s*$/; # skip blank lines
+			s/\n//;
+			close (HANDLE);
+			return $_;
+		}
+	}
+	return 0;
+}
 
+sub set_lastbackup {
+	if (!$opt_pretend) {
+		my ($type, $volume) = @_;
+		my $file = $afsbackup . '/var/lastbackup/' . $volume . '.' . $type;
+		open (HANDLE, ">$file") or print "cannot open file $file: $!\n";
+		print HANDLE time;
+		close (HANDLE);
+	}
+}
+
+sub get_vol_updatedate {
+	my ($volume) = @_;
+	foreach (`vos exam -format $volume 2>&1`) {
+		if (m/updateDate\s+(.+?)$/) {
+			return $1;
+		}
+	}
+	return 0;
+}
 __END__
 
 =head1 NAME
