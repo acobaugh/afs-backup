@@ -20,10 +20,11 @@ GetOptions(
 	't|timing' => \(my $opt_timing = 0),
 	'tsm-node-name=s' => \(my $tsmnode = $hostname),
 	'force-hostname=s' => \($hostname = $hostname),
-	'no-dumpacl' => \(my $opt_nodumpacl = 0),
+	'no-dumpacls' => \(my $opt_nodumpacl = 0),
 	'no-dsmc' => \(my $opt_nodsmc = 0),
 	'no-dumpvldb' => \(my $opt_nodumpvldb = 0),
-	'no-lastbackup' => \(my $opt_nolastbackup = 0)
+	'no-lastbackup' => \(my $opt_nolastbackup = 0),
+	'use-dotbackup' => \(my $opt_usedotbackup = 0)
 );
 
 my $vosbackup_cmd = 'vos backup';
@@ -51,6 +52,7 @@ if ($opt_help) {
 	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
 	print "\t[--no-dumpacl] -- Don't recursively dump acls\n";
 	print "\t[--no-dumpvldb] -- Don't dump the VLDB\n\n";
+	print "\t[--use-dotbackup] -- Use BK volumes as snapshotroot (also requires -backuptree option to afsd)\n\n";
 	print "Environment Variables:\n";
 	print "\tAFSBACKUP -- root directory containing etc/ and var/\n";
 	print "\tVOSBACKUP_CMD -- command to use to perform vos backup instead of 'vos backup'\n";
@@ -234,22 +236,26 @@ sub mode_tsm {
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
 
 	if ( -e "$dsmsys" or $opt_pretend) {
-		open (HANDLE, '>>', $dsmsys);
-		#print HANDLE "INCLEXCL $inclexcl\n";
+		open (DSMSYS, '>>', $dsmsys);
+		#print DSMSYS "INCLEXCL $inclexcl\n";
 		# virtualmounts based on all afs mount points
-		printf HANDLE "VirtualMountPoint %s\n", $config{'basepath'};
-		printf HANDLE "VirtualMountPoint /afs\n";
+		printf DSMSYS "VirtualMountPoint %s\n", $config{'basepath'};
+		printf DSMSYS "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
-			next if ! -d $_; # skip mountpoints that we can't access
+			# skip mountpoints that we can't access. 
+			# This might allow volumes to be backed up that we don't want, so be careful!
+			next if ! -d $_; 			
 			my $abspath = $_;
-			my $relative_path = $_;
-			printf HANDLE "VirtualMountPoint %s\n", $abspath;
-			$relative_path =~ s/$config{'basepath'}//;
-			# when using afsd -backuptree, don't define virtualm's for .backup mounts
-			# as they already don't exist
-			if ($mounts_by_path{$abspath}{'volume'} !~ m/.+\.backup$/) {
-				printf HANDLE "VirtualMountPoint %s\n", 
-					$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $relative_path ;
+			printf DSMSYS "VirtualMountPoint %s\n", $abspath;
+			if ($opt_usedotbackup) {
+				my $relative_path = $abspath;
+				$relative_path =~ s/$config{'basepath'}//;
+				# when using afsd -backuptree, don't define virtualm's for .backup mounts
+				# as they already don't exist
+				if ($mounts_by_path{$abspath}{'volume'} !~ m/.+\.backup$/) {
+					printf DSMSYS "VirtualMountPoint %s\n", 
+						$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $relative_path ;
+				}
 			}
 		}
 	} else {
@@ -318,13 +324,28 @@ sub mode_tsm {
 	# this seems kinda more kludgy than usual. Removes duplicates
 	# and skips those paths that we don't want to backup
 	# %nobackup was an afterthought, should probably rethink
+	my $volume_to_check;
 	for ($i = 0; $i <= $#backup; $i++) {
 		$volume = $mounts_by_path{$backup[$i]}{'volume'};
-		if ($nobackup{$volume} ne 1 # we don't not want to backup
-				and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
-					or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
-			)){
-			$backup_hash{$volume} = $backup[$i];
+		if ($opt_usedotbackup) {
+			$volume_to_check = "$volume.backup";
+		} else {
+			$volume_to_check = $volume;
+		}
+		# not checking the .backup volume means we share lastupdate times between foo and foo.backup
+		# but we could lose data when switching to use .backup if the volume is updated between the time we
+		# backed up the .backup and the time we switched
+		if (get_vol_updatedate($volume_to_check) gt get_lastbackup('tsm', $volume)) {
+			if ($nobackup{$volume} ne 1 # we don't not want to backup
+					and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
+						or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
+				)){
+				$backup_hash{$volume} = $backup[$i];
+			}
+		} else {
+			if (!$opt_quiet) {
+				print "Skipping volume $volume ($volume_to_check) because it hasn't been updated since it was last backed up\n";
+			}
 		}
 	}
 	
@@ -370,24 +391,25 @@ sub mode_tsm {
 			keys %backup_hash) {
 			printf "%s | %s | %s\n", $backup_hash{$_}, $_, $policy{$backup_hash{$_}};
 		}
+		print "TOTAL: " . keys(%backup_hash) . " mountpoints out of " . keys(%mounts_by_path) . "\n";
 	}
 
 	# default management class
 	if ($config{'tsm-policy-default'} ne "") {
-		printf HANDLE "\n* Default management class (policy-default)\ninclude * %s\n\n", $config{'tsm-policy-default'};
+		printf DSMSYS "\n* Default management class (policy-default)\ninclude * %s\n\n", $config{'tsm-policy-default'};
 	}
 	# per-path management class
-	print HANDLE "\n* per-path management classes\n";
+	print DSMSYS "\n* per-path management classes\n";
 	foreach (sort { length $a <=> length $b || $a cmp $b } %backup_hash) {
 		if ($policy{$_} ne '') {
-			printf HANDLE "INCLUDE %s/* %s\n", $_, $policy{$_};
-			printf HANDLE "INCLUDE %s/.../* %s\n", $_, $policy{$_};
+			printf DSMSYS "INCLUDE %s/* %s\n", $_, $policy{$_};
+			printf DSMSYS "INCLUDE %s/.../* %s\n", $_, $policy{$_};
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
 	cmd("cat $afsbackup/etc/common/exclude.list >> $dsmsys");
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
-	close (HANDLE); # close dsm.sys.$tsmnode
+	close (DSMSYS); # close dsm.sys.$tsmnode
 
 	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")){
 		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
@@ -397,31 +419,27 @@ sub mode_tsm {
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
 	# then mount each volume
-	if (!$opt_quiet) {
-		print "\n=== Creating .backup volumes if needed ===\n";
-	}
-	foreach $tmp (sort keys %backup_hash) {
+	if ($opt_usedotbackup) {
 		if (!$opt_quiet) {
-			print "Checking for BK volume for $tmp ...\n";
-		}
-		if (! cmd("vos exam $tmp.backup >/dev/null 2>&1")) {
-			if ($opt_verbose) {
-				print "No backup volume for $tmp. Will attempt to create.\n";
-				cmd("$vosbackup_cmd $tmp");
+			print "\n=== Creating .backup volumes if needed ===\n";
+		} 
+		foreach $tmp (sort keys %backup_hash) {
+			if (!$opt_quiet) {
+				print "Checking for BK volume for $tmp ...\n";
+			}
+			if (! cmd("vos exam $tmp.backup >/dev/null 2>&1")) {
+				if ($opt_verbose) {
+					print "No backup volume for $tmp. Will attempt to create.\n";
+					cmd("$vosbackup_cmd $tmp");
+				}
 			}
 		}
 	}
 
-#	foreach $tmp (sort keys %backup_hash) {
-#		if (!$opt_quiet) {
-#			print "Mounting BK volume for $tmp\n";
-#		}
-#		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
-#		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp.backup");
-#	}
-
-	cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/root.cell >/dev/null 2>&1");
-	cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/root.cell root.cell.backup");
+	if ($opt_usedotbackup) {
+		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/root.cell >/dev/null 2>&1");
+		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/root.cell root.cell.backup");
+	}
 
 	# dump vldb
 	if (!$opt_nodumpvldb) {
@@ -432,12 +450,19 @@ sub mode_tsm {
 	# dump acls
 	if (!$opt_nodumpacl) {
 		print "\n=== Dumping ACLs ===\n";
-		foreach $tmp (sort keys %backup_hash) {
-			printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
-			cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/$tmp $tmp");
-			cmd("dumpacls.pl $config{'tsm-backup-tmp-mount-path'}/$tmp > $afsbackup/var/acl/$tmp 2>/dev/null");
-			cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/$tmp >/dev/null 2>&1");
+		foreach $volume (sort keys %backup_hash) {
+			printf "[acl] %s (%s)\n", $backup_hash{$volume}, $volume;
+			if ($opt_usedotbackup) {
+				$path = $config{'tsm-backup-tmp-mount-path'} . '/' . $volume;
+				cmd("fs rmm $path >/dev/null 2>&1");
+				cmd("fs mkm $path $volume.backup");
+			} else {
+				$path = $backup_hash{$volume};
+			}
+			cmd("dumpacls.pl $path > $afsbackup/var/acl/$volume 2>/dev/null");
+			if ($opt_usedotbackup) {
+				cmd("fs rmm $path >/dev/null 2>&1");
+			}
 		}
 	}
 
@@ -446,22 +471,28 @@ sub mode_tsm {
 	cmd("mv $afsbackup/var/log/dsmc.log.$tsmnode $afsbackup/var/log/dsmc.log.$tsmnode.last ; 
 		mv $afsbackup/var/log/dsmc.error.$tsmnode $afsbackup/var/log/dsmc.error.$tsmnode.last");
 
-	foreach $tmp (sort keys %backup_hash) {
-		printf "%s (%s)\n", $backup_hash{$tmp}, $tmp;
-		if ($backup_hash{$tmp} eq $config{'basepath'}) {
-			$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell';
-		} else {
-			$backup_hash{$tmp} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
-			$path = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
+	my $snapshotroot='';
+	foreach $volume (sort keys %backup_hash) {
+		printf "[dsmc] %s (%s)\n", $backup_hash{$volume}, $volume;
+		if ($opt_usedotbackup) {
+			if ($backup_hash{$volume} eq $config{'basepath'}) {
+				$snapshotroot = $config{'tsm-backup-tmp-mount-path'} . '/root.cell';
+			} else {
+				$backup_hash{$volume} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
+				$snapshotroot = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
+			}
+			$snapshotroot = '-snapshotroot=' . $snapshotroot;
 		}
-		$command = sprintf("dsmc incremental %s -snapshotroot=%s >> %s 2>&1",
-			$backup_hash{$tmp}, 
-			$path,
+
+		$command = sprintf("dsmc incremental %s %s >> %s 2>&1",
+			$backup_hash{$volume}, 
+			$snapshotroot,
 			$afsbackup . '/var/log/dsmc.log.' . $tsmnode,
 			$afsbackup . '/var/log/dsmc.error.' . $tsmnode);
 		if (!$opt_nodsmc) {
 			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
+			set_lastbackup('tsm', $volume);
 		} else {
 			print "$command\n";
 		}
