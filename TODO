@@ -1,4 +1,3 @@
-- be more intelligent about when to dump acls, and really, when to backup into TSM by examining Last Update field for
-  the volume
-- allow to select whether to use .backup volumes as the source for TSM backups, implying use of -backuptree option to
-  afsd, or to backup straight from the normal mountpoint
+- update POD 
+- come up with spiffy name for it?
+- stop using cmd() for copying/cat'ing/creating/rm'ing files
