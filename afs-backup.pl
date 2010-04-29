@@ -1,11 +1,13 @@
-#!/usr/bin/perl 
+#!/usr/bin/env perl
 
 use strict;
+use warnings;
+
 use Getopt::Long;
 use Sys::Hostname;
 
-my ($tmp, @tmp_array, $file, %config, $i, $k, $v, $path);
-my ($mntpt, $type, $volume, $cell, %mounts_by_path, %mounts_by_volume);
+#my ($tmp, @tmp_array, $file, %config, $i, $k, $v, $path);
+#my ($mntpt, $type, $volume, $cell, %mounts_by_path, %mounts_by_volume);
 
 my $hostname = hostname();
 
@@ -24,7 +26,8 @@ GetOptions(
 	'no-dsmc' => \(my $opt_nodsmc = 0),
 	'no-dumpvldb' => \(my $opt_nodumpvldb = 0),
 	'no-lastbackup' => \(my $opt_nolastbackup = 0),
-	'use-dotbackup' => \(my $opt_usedotbackup = 0)
+	'use-dotbackup' => \(my $opt_usedotbackup = 0),
+	'use-volmountsdb' => \(my $opt_usevolmountsdb = 0)
 );
 
 my $vosbackup_cmd = 'vos backup';
@@ -37,7 +40,7 @@ $shorthostname =~ s/\..*//;
 
 my $afsbackup = $ENV{'AFSBACKUP'};
 if ($afsbackup !~ m/^\//) {
-	print "AFSBACKUP should really be absolute\n\n";
+	print "AFSBACKUP should really be an absolute path\n\n";
 	exit 1;
 }
 
@@ -60,40 +63,62 @@ if ($opt_help) {
 	exit 0;
 }
 
-# read in configuration common to all modes
-my @configfiles_single_common = (
-	'basepath',
-	'thiscell'
-);
-
-foreach $file (@configfiles_single_common) {
-	foreach ('common', "hosts/$shorthostname") {
-		$tmp = read_file_single("$afsbackup/etc/$_/$file");
-		if ($tmp ne 0 and $tmp ne "") {
-			print "$file = $tmp\n";
-			$config{$file} = $tmp;
-		}
-	}
-}
-
-print "afsbackup = $afsbackup\n";
-print "hostname = $hostname\n";
-print "shorthostname = $shorthostname\n";
-
-if ($opt_verbose) {
-	print "\n=== Common Configuration ===\n";
-	foreach (@configfiles_single_common) {
-		printf "$_ = %s\n", $config{$_};
-	}
-}
-
 my $total_starttime = time();
 
+if (!$opt_quiet) {
+	print "=== afs-backup.pl ===\n\n";
+}
+
+use Config::General;
+my $conf = new Config::General("$afsbackup/etc/hosts/$shorthostname/config.cfg");
+if (!$conf) {
+	print "Failed to read config file.\n";
+	exit 1;
+}
+my %c = $conf->getall;
+
+# get rid of any trailing slashes in basepath
+$c{'basepath'} =~ s/\/$//;
+foreach (keys %{$c{'vosbackup'}{'backup'}{'path'}}) {
+	if ($_ !~ /^\//) {
+		$_ = $c{'basepath'} . '/' . $_;
+	}
+}
+
+if ($opt_verbose) {
+	print "afsbackup = $afsbackup\n";
+	print "hostname = $hostname\n";
+	print "shorthostname = $shorthostname\n\n";
+	use Data::Dumper;
+	print "\n=== Configuration ===\n";
+	print Dumper(\%c);
+}
+
 # read in mounts-by-path and mounts-by-volume
+my (%mounts_by_path, %mounts_by_volume);
 if ($mode ne 'find-mounts') {
 	# mounts-by-foo is created either weekly or nightly, probably weekly
-	%mounts_by_path = read_mounts_by_path("$afsbackup/var/mounts/mounts-by-path");
-	%mounts_by_volume = read_mounts_by_volume("$afsbackup/var/mounts/mounts-by-volume");
+	if ($opt_usevolmountsdb) {
+		use VolmountsDB;
+
+		my $vdb = VolmountsDB->new(
+			$c{'volmountsdb'}{'user'},
+			$c{'volmountsdb'}{'password'},
+			$c{'volmountsdb'}{'host'},
+			$c{'volmountsdb'}{'db'},
+			$c{'basepath'} . '/'
+		);
+		if (!$vdb) {
+			print "Failed to connect to volmountsdb!\n";
+			exit 1;
+		}
+		%mounts_by_path = $vdb->get_mounts_by_path();
+		%mounts_by_volume = $vdb->get_mounts_by_vol();
+
+	} else {
+		%mounts_by_path = read_mounts_by_path("$afsbackup/var/mounts/mounts-by-path");
+		%mounts_by_volume = read_mounts_by_volume("$afsbackup/var/mounts/mounts-by-volume");
+	}
 
 	if (keys(%mounts_by_path) le 0 or keys(%mounts_by_volume) le 0) {
 		print "No mounts found! This is bad.\n";
@@ -101,15 +126,15 @@ if ($mode ne 'find-mounts') {
 	}
 	if ($opt_verbose) {
 		print "Mounts by path:\n";
-		foreach (keys %mounts_by_path) {
-			printf "\t$_ = %s\n", $mounts_by_path{$_}{'volume'};
+		foreach my $path (sort keys %mounts_by_path) {
+			printf "\t%s = %s\n", $path, $mounts_by_path{$path}{'volname'};
 		}
 
 		print "Mounts by volume:\n";
-		foreach $tmp (keys %mounts_by_volume) {
-			printf "\t$tmp (%s) = \n", $mounts_by_volume{$tmp}{'cell'};
-			foreach (keys %{$mounts_by_volume{$tmp}{'paths'}}) {
-					printf "\t\t%s %s\n", $mounts_by_volume{$tmp}{'paths'}{$_}, $_;
+		foreach my $volume (sort keys %mounts_by_volume) {
+			printf "\t%s (%s) = \n", $volume, $mounts_by_volume{$volume}{'cell'};
+			foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
+					printf "\t\t%s %s\n", $mounts_by_volume{$volume}{'paths'}{$path}, $path;
 			}
 		}
 	}
@@ -142,104 +167,148 @@ if ($opt_timing) {
 print "$mode returned $exit\n";
 exit $exit;
 
+# accepts mounts_by_path-like hashref, hash of regexes to check, keyed by regex
+# returns: hash of volumes to back up, value -1 means explicitly don't backup
+sub match_by_path(\%\%) {
+	my ($by_path, $r) = @_;
+	my (%return);
+	
+	foreach my $path (keys %$by_path) {
+		next if $by_path->{$path}{'mtpttype'} ne '#'; # we only want normal mountpoints
+		my $volume = $by_path->{$path}{'volname'};
+		foreach (keys %$r) {
+			my $regex = $_;
+			my $exclude_from_backup = 0;
+			if ($regex =~ m/^\!/) {
+				$exclude_from_backup = 1;
+				$regex =~ s/^\!//;
+			}
+			# normalize paths
+			$path =~ s/\/+/\//; # get rid of duplicate /'s
+			$path =~ s/\/$//; # remove any trailing /'s
+			$regex =~ s/\/+/\//; # get rid of duplicate /'s
+			$regex =~ s/\/$//; # remove any trailing /'s
+			if ($path =~ m/$regex/) {
+				if ($exclude_from_backup) {
+					$return{$volume} = -1;
+				} elsif (!defined $return{$volume}) {
+					$return{$volume} = 1;
+				}
+			}
+		}
+	}
+	return %return;
+}
+
+# accepts mounts_by_volume-like hashref, hash of regexes to check, keyed by regex
+# returns: hash of volumes to back up, value -1 means explicitly don't backup
+sub match_by_volume(\%\%) {
+	my ($by_volume, $r) = @_;
+	my (%return);
+	
+	foreach my $volume (keys %$by_volume) {
+		foreach my $regex (keys %$r) {
+			my $exclude_from_backup = 0;
+			if ($regex =~ m/^\!/) {
+				$exclude_from_backup = 1;
+				$regex =~ s/^\!//;
+			}
+			if ($volume =~ m/$regex/) {
+				if ($exclude_from_backup) {
+					$return{$volume} = -1;
+				} elsif (!defined $return{$volume}) {
+					$return{$volume} = 1;
+				}
+			}
+		}
+	}
+	return %return, 
+}
+
+# adds the results of match_by_*
+# returns combined hash, negative values mean do not backup
+sub add_match_by(\%\%) {
+	my ($one, $two) = @_;
+
+	my %return = %$one;
+	# now we add two to return, adding values
+	foreach (keys %$two) {
+		if (defined $return{$_}) {
+			$return{$_} = $return{$_} + $two->{$_};
+		} else {
+			$return{$_} = $two->{$_};
+		}
+	}
+	return %return;
+}
+
+# return match_by_* type hash with excluded volumes removed
+sub exclude_matched(%) {
+	my (%in) = @_;
+
+	my %return;
+	foreach my $volume (keys %in) {
+		if ($in{$volume} gt 0) {
+			$return{$volume} = 1;
+		}
+	}
+	return %return;
+}
+	
+# return match_by_* type hash with volumes removed based on lastbackup times
+sub exclude_lastbackup(\%$) {
+	my ($in, $mode) = @_;
+	my ($volume_to_check, %return);
+	foreach my $volume (keys %$in ) {
+		if ($opt_usedotbackup) {
+			$volume_to_check = "$volume.backup";
+		} else {
+			$volume_to_check = $volume;
+		}
+		# not checking the .backup volume means we share lastupdate times between foo and foo.backup
+		# but we could lose data when switching to use .backup if the volume is updated between the time we
+		# backed up the .backup and the time we switched
+		if (get_vol_updatedate($volume_to_check) gt get_lastbackup($mode, $volume)) {
+			$return{$volume} = 1;
+		} else {
+			if (!$opt_quiet) {
+				print "Skipping volume $volume ($volume_to_check) because it hasn't been updated since it was last backed up\n";
+			}
+		}
+	}
+	return %return;
+}
+
 ##
 ## TSM mode
 ##
 sub mode_tsm {
-	my (%policy, $exclude_from_backup, @backup, %backup_hash, %nobackup, $command);
-
-	if (!$opt_quiet) {
-		print "TSM Node: $tsmnode\n";
-	}
-	# these are single-valued (single-line) config files
-	my @configfiles_single = (
-		'tsm-policy-default',
-		'tsm-policy-order',
-		'tsm-backup-tmp-mount-path',
-	);
-
-	##
-	## read in $config 
-	##
-	# single-line single-value
-	foreach $file (@configfiles_single) {
-		foreach ('common', "hosts/$shorthostname") {
-			$tmp = read_file_single("$afsbackup/etc/$_/$file");
-			if ($tmp ne 0 and $tmp ne "") {
-				$config{$file} = $tmp;
-			}
+	# massage config
+	foreach (keys %{$c{'tsm'}{'backup'}{'path'}}) {
+		if ($_ !~ /^\//) {
+			$_ = $c{'basepath'} . '/' . $_;
 		}
 	}
-	
-	# what to backup into tsm
-	foreach $file ('tsm-backup-by-path', 'tsm-backup-by-volume') {
-		$i = 0;
-		foreach ('common', "hosts/$shorthostname") {
-			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
-			if (@tmp_array) {
-				foreach (@tmp_array) {
-					$config{$file}[$i] = $_;
-					$i++;
-				}
-			}
-		}
-	}
-
-	# policies (management classes)
-	foreach $file ('tsm-policy-by-path', 'tsm-policy-by-volume') {
-		$i = 0;
-		foreach ('common', "hosts/$shorthostname") {
-			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
-			if (@tmp_array) {
-				foreach (@tmp_array) {
-					# we get the lines back in order from top to bottom
-					($k, $v) = split(/\s+/, $_);
-					# we then put items onto the array keyed by $i in order they 
-					# appear in the file, from top to bottom
-					$config{$file}[$i] = { k => $k, v => $v };
-					$i++;
-				}
-			}
-		}
-	}
-
-
-	# spit out debugging info about configuration
-	if ($opt_verbose) {
-		print "\n=== TSM Configuration (\$config) ===\n";
-		foreach (@configfiles_single) {
-			printf "$_ = %s\n", $config{$_};
-		}
-
-		foreach ('tsm-backup-by-path', 'tsm-backup-by-volume') {
-			print "\n$_ =\n";
-			$i = 0;
-			for ($i = 0; $i <= $#{$config{$_}}; $i++) {
-				printf "\t$i = %s\n", $config{$_}[$i];
-			}
-		}
-
-		foreach ('tsm-policy-by-path', 'tsm-policy-by-volume') {
-			print "\n$_ =\n";
-			$i = 0;
-			for ($i = 0; $i <= $#{$config{$_}}; $i++) {
-				printf "\t$i = %s : %s\n", $config{$_}[$i]{'k'}, $config{$_}[$i]{'v'};
-			}
-		}
-	}
-
 
 	# start writing dsm.sys
-	my $dsmsys = "$afsbackup/var/tmp/dsm.sys.$tsmnode";
-	cmd("rm -f $dsmsys");
-	cmd("cp $afsbackup/etc/common/dsm.sys.head $dsmsys");
+	my $dsmsys = "$afsbackup/var/tmp/dsm.sys.$shorthostname";
+	if ( -e $dsmsys) {
+		cmd("rm -f $dsmsys");
+	}
+	if ( -e "$afsbackup/etc/common/dsm.sys.head") {
+		cmd("cp $afsbackup/etc/common/dsm.sys.head $dsmsys");
+	}
+	if ( ! -e "$afsbackup/etc/hosts/$shorthostname/dsm.sys.head") {
+		print "$afsbackup/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
+		exit 1;
+	}
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
 
 	if ( -e "$dsmsys" or $opt_pretend) {
 		open (DSMSYS, '>>', $dsmsys);
 		#print DSMSYS "INCLEXCL $inclexcl\n";
 		# virtualmounts based on all afs mount points
-		printf DSMSYS "VirtualMountPoint %s\n", $config{'basepath'};
+		printf DSMSYS "VirtualMountPoint %s\n", $c{'basepath'};
 		printf DSMSYS "VirtualMountPoint /afs\n";
 		foreach (sort keys %mounts_by_path) {
 			# skip mountpoints that we can't access. 
@@ -249,12 +318,12 @@ sub mode_tsm {
 			printf DSMSYS "VirtualMountPoint %s\n", $abspath;
 			if ($opt_usedotbackup) {
 				my $relative_path = $abspath;
-				$relative_path =~ s/$config{'basepath'}//;
+				$relative_path =~ s/$c{'basepath'}//;
 				# when using afsd -backuptree, don't define virtualm's for .backup mounts
 				# as they already don't exist
-				if ($mounts_by_path{$abspath}{'volume'} !~ m/.+\.backup$/) {
+				if ($mounts_by_path{$abspath}{'volname'} !~ m/.+\.backup$/) {
 					printf DSMSYS "VirtualMountPoint %s\n", 
-						$config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $relative_path ;
+						$c{'tsm'}{'tmp-mount-path'} . '/root.cell' . $relative_path ;
 				}
 			}
 		}
@@ -263,147 +332,94 @@ sub mode_tsm {
 		exit 1;
 	}
 
-	# determine what to backup by path
-	foreach $path (keys %mounts_by_path) {
-		next if $mounts_by_path{$path}{'type'} ne '#';
-		for ($i = 0; $i <= $#{$config{'tsm-backup-by-path'}}; $i++) {
-			$tmp = $config{'tsm-backup-by-path'}[$i];
-			$exclude_from_backup = 0;
-			if ($tmp =~ m/^\!/) {
-				$exclude_from_backup = 1;
-				$tmp =~ s/^\!//;
-			}
-			if ($tmp !~ /^\//) {
-				$tmp = $config{'basepath'} . '/' . $tmp;
-			}
-			$path =~ s/\/+/\//; # get rid of duplicate /'s
-			$path =~ s/\/$//; # remove any trailing /'s
-			$tmp =~ s/\/+/\//; # get rid of duplicate /'s
-			$tmp =~ s/\/$//; # remove any trailing /'s
-			if ($path =~ m/$tmp/) {
-				if ($exclude_from_backup) {
-					$nobackup{$mounts_by_path{$path}{'volume'}} = 1;
-				} else {
-					push @backup, $path;
-					if (! $nobackup{$path} ) {
-						#$nobackup{$path} = 0;
-					}
-				}
+	my %backup_by_path = match_by_path(%mounts_by_path, %{$c{'tsm'}{'backup'}{'path'}});
+	my %backup_by_volume = match_by_volume(%mounts_by_volume, %{$c{'tsm'}{'backup'}{'volume'}});
+	my %backup_matched = add_match_by(%backup_by_path, %backup_by_volume);
+	
+	# remove volumes that were excluded (value < 0)
+	%backup_matched = exclude_matched(%backup_matched);
+	%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
+
+	# get %backup_paths based on %backup_volumes, and the shortest normal path
+	my (%backup_paths);
+	foreach my $volume (keys %backup_matched) {
+		foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
+			next if $mounts_by_volume{$volume}{'paths'}{$path} ne '#'; # skip explicit RW mounts
+			if (defined($backup_paths{$volume}) 
+				and (length($mounts_by_volume{$volume}{'paths'}{$path}) 
+					lt length($backup_paths{$volume}))) {
+					$backup_paths{$volume} = $path;
+			} else {
+				$backup_paths{$volume} = $path;
 			}
 		}
 	}
 
-	# determine what to backup by volume
-	foreach $volume (keys %mounts_by_volume) {
-		for ($i = 0; $i <= $#{$config{'tsm-backup-by-volume'}}; $i++) {
-			$tmp = $config{'tsm-backup-by-volume'}[$i]; # looping this way ensures $tmp is a copy
-			$exclude_from_backup = 0;
-			if ($tmp =~ m/^\!/) {
-				$exclude_from_backup = 1;
-				$tmp =~ s/^\!//;
-			}
-			if ($volume =~ m/$tmp/) {
-				# get the first 'normal' mount
-				foreach (keys %{$mounts_by_volume{$volume}{'paths'}}) {
-					if ($mounts_by_volume{$volume}{'paths'}{$_} eq '#') {
-						if ($exclude_from_backup) {
-							$nobackup{$volume} = 1;
-						} else {
-							push @backup, $_;
-							if (! $nobackup{$path} ) {
-								#$nobackup{$_} = 0;
-							}
-						}
-						last;
-					}
-				}
-			}
-		}
-	}
-	
-	# this seems kinda more kludgy than usual. Removes duplicates
-	# and skips those paths that we don't want to backup
-	# %nobackup was an afterthought, should probably rethink
-	my $volume_to_check;
-	for ($i = 0; $i <= $#backup; $i++) {
-		$volume = $mounts_by_path{$backup[$i]}{'volume'};
-		if ($opt_usedotbackup) {
-			$volume_to_check = "$volume.backup";
-		} else {
-			$volume_to_check = $volume;
-		}
-		# not checking the .backup volume means we share lastupdate times between foo and foo.backup
-		# but we could lose data when switching to use .backup if the volume is updated between the time we
-		# backed up the .backup and the time we switched
-		if (get_vol_updatedate($volume_to_check) gt get_lastbackup('tsm', $volume)) {
-			if ($nobackup{$volume} ne 1 # we don't not want to backup
-					and (length($backup_hash{$volume}) eq 0 # and we don't have this volume yet
-						or length($backup[$i]) lt length($backup_hash{$volume}) # or we do have this vol, but this path is shorter
-				)){
-				$backup_hash{$volume} = $backup[$i];
-			}
-		} else {
-			if (!$opt_quiet) {
-				print "Skipping volume $volume ($volume_to_check) because it hasn't been updated since it was last backed up\n";
-			}
-		}
+	# strip trailing slash off of the path for dsmc incr to work correctly
+	foreach my $volume (keys %backup_paths) {
+		$backup_paths{$volume} =~ s/\/$//;
 	}
 	
 	# sanity check tsm-policy-order
-	if ($config{'tsm-policy-order'} !~ /(path\s+volume)|(volume\s+path)/) {
+	if ($c{'tsm'}{'policy'}{'order'} !~ /(path\s+volume)|(volume\s+path)/) {
 		print "Syntax error in tsm-policy-order. Expecting one of \"path volume\" or \"volume path\"\n";
 		exit 1;
 	} 
-	# determine management class to use
-	foreach $tmp (split(/\s+/, $config{'tsm-policy-order'})) {
-		if ($tmp eq 'path') {
-			foreach $path (%backup_hash) {
-				# run through tsm-policy-by-path in reverse order
-				for ($i = $#{$config{'tsm-policy-by-path'}}; $i >= 0; $i--) {
-					if ($path =~ m/$config{'tsm-policy-by-path'}[$i]{'k'}/) {
-						$policy{$path} = $config{'tsm-policy-by-path'}[$i]{'v'};
-					} elsif (!$policy{$path}) {
-						$policy{$path} = '';
-					}
 
+	my %policy_by_volume;
+	# determine management class to use
+	foreach my $policy (split(/\s+/, $c{'tsm'}{'policy'}{'order'})) {
+		if ($policy eq 'path') {
+			foreach my $volume (keys %backup_paths) {
+				my $path = $backup_paths{$volume};
+				# run through tsm-policy-by-path in order of increasing length?
+				foreach my $regex (sort { length $a <=> length $b || $a cmp $b } keys %{$c{'tsm'}{'policy'}{'path'}}) {
+					if ($path =~ m/$regex/) {
+						$policy_by_volume{$volume} = $c{'tsm'}{'policy'}{'path'}{$regex};
+					}
 				}
 			}
 		}
-		if ($tmp eq 'volume') {
-			foreach $path (%backup_hash) {
-				# run through tsm-policy-by-path in reverse order
-				for ($i = $#{$config{'tsm-policy-by-volume'}}; $i >= 0; $i--) {
-					if ($mounts_by_path{$path}{'volume'} =~ m/$config{'tsm-policy-by-volume'}[$i]{'k'}/) {
-						$policy{$path} = $config{'tsm-policy-by-volume'}[$i]{'v'};
-					} elsif (!$policy{$path}) {
-						$policy{$path} = '';
+		if ($policy eq 'volume') {
+			foreach my $volume (keys %backup_paths) {
+				# run through tsm-policy-by-volume
+				foreach my $regex (keys %{$c{'tsm'}{'policy'}{'volume'}}) {
+					if ($volume =~ m/$regex/) {
+						$policy_by_volume{$volume} = $c{'tsm'}{'policy'}{'volume'}{$regex};
 					}
-
 				}
 			}
 		}
 	}
+
+	# set default policy for those paths where we have no policy yet
+	foreach my $volume (keys %backup_paths) {
+		if (!defined($policy_by_volume{$volume}) or $policy_by_volume{$volume} eq '') {
+			$policy_by_volume{$volume} = $c{'tsm'}{'policy'}{'default'};
+		}
+	}
+			
 
 	if (!$opt_quiet) {
 		print "\n=== Paths/mountpoints to backup ===\n";
 		print "PATH | VOLUME | MGMTCLASS\n";
-		foreach (sort { $backup_hash{$a} cmp $backup_hash{$b} }
-			keys %backup_hash) {
-			printf "%s | %s | %s\n", $backup_hash{$_}, $_, $policy{$backup_hash{$_}};
+		foreach my $volume (sort keys %backup_paths) {
+			printf "%s | %s | %s\n", $backup_paths{$volume}, $volume, $policy_by_volume{$volume};
 		}
-		print "TOTAL: " . keys(%backup_hash) . " mountpoints out of " . keys(%mounts_by_path) . "\n";
+		print "TOTAL: " . keys(%backup_paths) . " volumes selected out of " . keys(%backup_matched) . " candidate volumes. \n";
+		print "There are " . keys(%mounts_by_volume) . " volumes total mounted within the cell.\n";
 	}
 
 	# default management class
-	if ($config{'tsm-policy-default'} ne "") {
-		printf DSMSYS "\n* Default management class (policy-default)\ninclude * %s\n\n", $config{'tsm-policy-default'};
+	if ($c{'tsm'}{'policy'}{'default'} ne "") {
+		printf DSMSYS "\n* Default management class (policy-default)\ninclude * %s\n\n", $c{'tsm'}{'policy'}{'default'};
 	}
 	# per-path management class
 	print DSMSYS "\n* per-path management classes\n";
-	foreach (sort { length $a <=> length $b || $a cmp $b } %backup_hash) {
-		if ($policy{$_} ne '') {
-			printf DSMSYS "INCLUDE %s/* %s\n", $_, $policy{$_};
-			printf DSMSYS "INCLUDE %s/.../* %s\n", $_, $policy{$_};
+	foreach my $v (sort { length $a <=> length $b || $a cmp $b } keys %backup_paths) {
+		if ($policy_by_volume{$v} ne '') {
+			printf DSMSYS "INCLUDE %s/* %s\n", $v, $policy_by_volume{$v};
+			printf DSMSYS "INCLUDE %s/.../* %s\n", $v, $policy_by_volume{$v};
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
@@ -411,7 +427,7 @@ sub mode_tsm {
 	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
 	close (DSMSYS); # close dsm.sys.$tsmnode
 
-	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")){
+	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")) {
 		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
 		return 1;
 	}
@@ -423,22 +439,22 @@ sub mode_tsm {
 		if (!$opt_quiet) {
 			print "\n=== Creating .backup volumes if needed ===\n";
 		} 
-		foreach $tmp (sort keys %backup_hash) {
+		foreach my $v (sort keys %backup_paths) {
 			if (!$opt_quiet) {
-				print "Checking for BK volume for $tmp ...\n";
+				print "Checking for BK volume for $v ...\n";
 			}
-			if (! cmd("vos exam $tmp.backup >/dev/null 2>&1")) {
+			if (! cmd("vos exam $v.backup >/dev/null 2>&1")) {
 				if ($opt_verbose) {
-					print "No backup volume for $tmp. Will attempt to create.\n";
-					cmd("$vosbackup_cmd $tmp");
+					print "No backup volume for $v. Will attempt to create.\n";
+					cmd("$vosbackup_cmd $v");
 				}
 			}
 		}
 	}
 
 	if ($opt_usedotbackup) {
-		cmd("fs rmm $config{'tsm-backup-tmp-mount-path'}/root.cell >/dev/null 2>&1");
-		cmd("fs mkm $config{'tsm-backup-tmp-mount-path'}/root.cell root.cell.backup");
+		cmd("fs rmm $c{'tsm'}{'tmp-mount-path'}/root.cell >/dev/null 2>&1");
+		cmd("fs mkm $c{'tsm'}{'tmp-mount-path'}/root.cell root.cell.backup");
 	}
 
 	# dump vldb
@@ -450,16 +466,17 @@ sub mode_tsm {
 	# dump acls
 	if (!$opt_nodumpacl) {
 		print "\n=== Dumping ACLs ===\n";
-		foreach $volume (sort keys %backup_hash) {
-			printf "[acl] %s (%s)\n", $backup_hash{$volume}, $volume;
+		foreach my $v (sort keys %backup_paths) {
+			printf "[acl] %s (%s)\n", $backup_paths{$v}, $v;
+			my $path;
 			if ($opt_usedotbackup) {
-				$path = $config{'tsm-backup-tmp-mount-path'} . '/' . $volume;
+				$path = $c{'tsm'}{'tmp-mount-path'} . '/' . $v;
 				cmd("fs rmm $path >/dev/null 2>&1");
-				cmd("fs mkm $path $volume.backup");
+				cmd("fs mkm $path $v.backup");
 			} else {
-				$path = $backup_hash{$volume};
+				$path = $backup_paths{$v};
 			}
-			cmd("dumpacls.pl $path > $afsbackup/var/acl/$volume 2>/dev/null");
+			cmd("dumpacls.pl $path > $afsbackup/var/acl/$v 2>/dev/null");
 			if ($opt_usedotbackup) {
 				cmd("fs rmm $path >/dev/null 2>&1");
 			}
@@ -468,31 +485,31 @@ sub mode_tsm {
 
 	# run dsmc incremental
 	print "\n=== Running dsmc incremental ===\n";
-	cmd("mv $afsbackup/var/log/dsmc.log.$tsmnode $afsbackup/var/log/dsmc.log.$tsmnode.last ; 
-		mv $afsbackup/var/log/dsmc.error.$tsmnode $afsbackup/var/log/dsmc.error.$tsmnode.last");
+	cmd("mv $afsbackup/var/log/dsmc.log.$shorthostname $afsbackup/var/log/dsmc.log.$shorthostname.last ; 
+		mv $afsbackup/var/log/dsmc.error.$shorthostname $afsbackup/var/log/dsmc.error.$shorthostname.last");
 
 	my $snapshotroot='';
-	foreach $volume (sort keys %backup_hash) {
-		printf "[dsmc] %s (%s)\n", $backup_hash{$volume}, $volume;
+	foreach my $v (sort keys %backup_paths) {
+		printf "[dsmc] %s (%s)\n", $backup_paths{$v}, $v;
 		if ($opt_usedotbackup) {
-			if ($backup_hash{$volume} eq $config{'basepath'}) {
-				$snapshotroot = $config{'tsm-backup-tmp-mount-path'} . '/root.cell';
+			if ($backup_paths{$v} eq $c{'basepath'}) {
+				$snapshotroot = $c{'tsm'}{'tmp-mount-path'} . '/root.cell';
 			} else {
-				$backup_hash{$volume} =~ m/$config{'basepath'}(.+)/; # grab the part of the path after basepath
-				$snapshotroot = $config{'tsm-backup-tmp-mount-path'} . '/root.cell' . $1;
+				$backup_paths{$v} =~ m/$c{'basepath'}(.+)/; # grab the part of the path after basepath
+				$snapshotroot = $c{'tsm'}{'tmp-mount-path'} . '/root.cell' . $1;
 			}
 			$snapshotroot = '-snapshotroot=' . $snapshotroot;
 		}
 
-		$command = sprintf("dsmc incremental %s %s >> %s 2>&1",
-			$backup_hash{$volume}, 
+		my $command = sprintf("dsmc incremental %s %s >> %s 2>&1",
+			$backup_paths{$v}, 
 			$snapshotroot,
-			$afsbackup . '/var/log/dsmc.log.' . $tsmnode,
-			$afsbackup . '/var/log/dsmc.error.' . $tsmnode);
+			$afsbackup . '/var/log/dsmc.log.' . $shorthostname,
+			$afsbackup . '/var/log/dsmc.error.' . $shorthostname);
 		if (!$opt_nodsmc) {
 			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
-			set_lastbackup('tsm', $volume);
+			set_lastbackup('tsm', $v);
 		} else {
 			print "$command\n";
 		}
@@ -505,7 +522,7 @@ sub mode_tsm {
 ## find-mounts mode
 ##
 sub mode_find_mounts {
-	($path) = @_;
+	my ($path) = @_;
 	$path =~ s/\/$//; # get rid of trailing /
 	my $filename = $path;
 	$filename =~ s/^\///; # get rid of leading /
@@ -527,109 +544,25 @@ sub mode_find_mounts {
 
 } # END sub mode_find_mounts
 
+
 ##
 ## vosbackup mode
 ##
 sub mode_vosbackup {
 	my ($exclude_from_backup, @backup, %backup_hash, %nobackup);
 	
-	# what to vos backup
-	foreach $file ('vosbackup-by-path', 'vosbackup-by-volume') {
-		$i = 0;
-		foreach ('common', "hosts/$shorthostname") {
-			@tmp_array = read_file_multi("$afsbackup/etc/$_/$file");
-			if (@tmp_array) {
-				foreach (@tmp_array) {
-					$config{$file}[$i] = $_;
-					$i++;
-				}
-			}
-		}
-	}
-
-	# spit out debugging info about configuration
-	if ($opt_verbose) {
-		print "\n=== vos backup configuration (\$config) ===\n";
-
-		foreach ('vosbackup-by-path', 'vosbackup-by-volume') {
-			print "\n$_ =\n";
-			$i = 0;
-			for ($i = 0; $i <= $#{$config{$_}}; $i++) {
-				printf "\t$i = %s\n", $config{$_}[$i];
-			}
-		}
-	}
-
-	# determine what to vos backup by path
-	foreach $path (keys %mounts_by_path) {
-		next if $mounts_by_path{$path}{'type'} ne '#';
-		$volume = $mounts_by_path{$path}{'volume'};
-		for ($i = 0; $i <= $#{$config{'vosbackup-by-path'}}; $i++) {
-			$tmp = $config{'vosbackup-by-path'}[$i];
-			$exclude_from_backup = 0;
-			if ($tmp =~ m/^\!/) {
-				$exclude_from_backup = 1;
-				$tmp =~ s/^\!//;
-			}
-			if ($tmp !~ /^\//) {
-				$tmp = $config{'basepath'} . '/' . $tmp;
-			}
-			$path =~ s/\/+/\//; # get rid of duplicate /'s
-			$path =~ s/\/$//; # remove any trailing /'s
-			$tmp =~ s/\/+/\//; # get rid of duplicate /'s
-			$tmp =~ s/\/$//; # remove any trailing /'s
-			if ($path =~ m/$tmp/) {
-				if ($exclude_from_backup) {
-					$nobackup{$volume} = 1;
-				} else {
-					push @backup, $volume;
-				}
-			}
-		}
-	}
-
-	# determine what to backup by volume
-	foreach $volume (keys %mounts_by_volume) {
-		for ($i = 0; $i <= $#{$config{'vosbackup-by-volume'}}; $i++) {
-			$tmp = $config{'vosbackup-by-volume'}[$i]; # looping this way ensures $tmp is a copy
-			$exclude_from_backup = 0;
-			if ($tmp =~ m/^\!/) {
-				$exclude_from_backup = 1;
-				$tmp =~ s/^\!//;
-			}
-			if ($volume =~ m/$tmp/) {
-				# get the first 'normal' mount
-				if ($exclude_from_backup) {
-					$nobackup{$volume} = 1;
-				} else {
-					push @backup, $volume;
-				}
-			}
-		}
-	}
+	my %backup_by_path = match_by_path(%mounts_by_path, %{$c{'vosbackup'}{'path'}});
+	my %backup_by_volume = match_by_volume(%mounts_by_volume, %{$c{'vosbackup'}{'volume'}});
+	my %backup_matched = add_match_by(%backup_by_volume, %backup_by_path);
 	
-	# this seems kinda more kludgy than usual. Removes duplicates
-	# and skips those paths that we don't want to backup
-	# %nobackup was an afterthought, should probably rethink
-	for ($i = 0; $i <= $#backup; $i++) {
-		$volume = $backup[$i];
-		if (get_vol_updatedate($volume) gt get_lastbackup('vosbackup', $volume)) {
-			if ($nobackup{$volume} ne 1 # we don't not want to backup
-					and (length($backup_hash{$volume}) eq 0) # and we don't have this volume yet
-				) {
-				$backup_hash{$volume} = 1;
-			}
-		} else {
-			if (!$opt_quiet) {
-				print "Skipping volume $volume because it hasn't been updated since it was last backed up\n";
-			}
-		}
-	}
-
+	# remove volumes that were excluded (value < 0)
+	%backup_matched = exclude_matched(%backup_matched);
+	%backup_matched = exclude_lastbackup(%backup_matched, 'vosbackup');
+	
 	if (!$opt_quiet) {
 		print "\n=== volumes to vos backup ===\n";
 		print "VOLUME\n";
-		foreach (sort keys %backup_hash) {
+		foreach (sort keys %backup_matched) {
 			printf "%s\n", $_;
 		}
 	}
@@ -637,7 +570,7 @@ sub mode_vosbackup {
 	my $return = 0;
 	print "\n=== running vos backup ===\n";
 	# actually run the vos backup command
-	foreach $volume (sort keys %backup_hash) {
+	foreach my $volume (sort keys %backup_matched) {
 		if (!$opt_quiet) {
 			print "$vosbackup_cmd $volume\n";
 		}
@@ -777,13 +710,13 @@ sub read_mounts_by_path {
 			push @tmp_array, [ split(/\|/, $_) ];
 		}
 	}
-	for $i (0 .. $#tmp_array) {
-		($mntpt, $type, $volume, $cell) = @{$tmp_array[$i]};
+	for my $i (0 .. $#tmp_array) {
+		my ($mntpt, $type, $volume, $cell) = @{$tmp_array[$i]};
 		$return{$mntpt} = { 
 			type => $type,
 			volume => $volume,
 			cell => $cell
-		};
+		}
 	}
 	return %return;
 }
@@ -824,6 +757,8 @@ sub get_vol_updatedate {
 	}
 	return 0;
 }
+
+
 __END__
 
 =head1 NAME
