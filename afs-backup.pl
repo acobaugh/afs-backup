@@ -5,167 +5,204 @@ use warnings;
 
 use Getopt::Long;
 use Sys::Hostname;
+use Fcntl qw(:flock);
 
-#my ($tmp, @tmp_array, $file, %config, $i, $k, $v, $path);
-#my ($mntpt, $type, $volume, $cell, %mounts_by_path, %mounts_by_volume);
+open(SELF, "<", $0) or die "Cannot open $0 - $!";
+flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
 
-my $hostname = hostname();
 
+my %opt = ();
 Getopt::Long::Configure('bundling');
-GetOptions(
-	'h' => \(my $opt_h = 0),
-	'help' => \(my $opt_help = 0),
-	'v|verbose' => \(my $opt_verbose = 0),
-	'q|quiet' => \(my $opt_quiet = 0),
-	'p|pretend' => \(my $opt_pretend = 0),
-	'm|mode=s' => \(my $mode = 'none'),
-	't|timing' => \(my $opt_timing = 0),
-	'tsm-node-name=s' => \(my $tsmnode = $hostname),
-	'force-hostname=s' => \($hostname = $hostname),
-	'no-dumpacls' => \(my $opt_nodumpacl = 0),
-	'no-dsmc' => \(my $opt_nodsmc = 0),
-	'no-dumpvldb' => \(my $opt_nodumpvldb = 0),
-	'no-lastbackup' => \(my $opt_nolastbackup = 0),
-	'use-dotbackup' => \(my $opt_usedotbackup = 0),
-	'use-volmountsdb' => \(my $opt_usevolmountsdb = 0)
+GetOptions(\%opt, 
+	'h', 
+	'help',
+	'mode=s',
+	'force-hostname=s',
+	'config=s'	
 );
 
-my $vosbackup_cmd = 'vos backup';
-if (defined($ENV{'VOSBACKUP_CMD'})) {
-	$vosbackup_cmd = $ENV{'VOSBACKUP_CMD'};
+my $hostname;
+if (defined $opt{'force-hostname'}) {
+	$hostname = $opt{'force-hostname'};
+} else {
+	$hostname = hostname();
 }
-
 my $shorthostname = $hostname;
 $shorthostname =~ s/\..*//;
 
-my $afsbackup = $ENV{'AFSBACKUP'};
-if ($afsbackup !~ m/^\//) {
+my $AFSBACKUP = $ENV{'AFSBACKUP'};
+if ($AFSBACKUP !~ m/^\//) {
 	print "AFSBACKUP should really be an absolute path\n\n";
 	exit 1;
 }
 
-
-if ($opt_help) {
+if (defined $opt{'help'}) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
-} elsif ($mode eq "none" or $afsbackup eq "" or $opt_h) {
-	print "Usage: $0 [-h] [--help] [-p|pretend] [-v|--verbose] [-q|--quiet] [-t|--timing] [--force-hostname HOSTNAME]	[--no-lastbackup]\n";
-	print "-m|--mode [tsm|shadow|find-mounts|vosbackup|vosrelease|vosdump]\n\n";
-	print "tsm options:\n";
-	print "\t[--tsm-node-name NODENAME] -- Force tsm node to NODENAME\n";
-	print "\t[--no-dumpacl] -- Don't recursively dump acls\n";
-	print "\t[--no-dumpvldb] -- Don't dump the VLDB\n\n";
-	print "\t[--use-dotbackup] -- Use BK volumes as snapshotroot (also requires -backuptree option to afsd)\n\n";
-	print "Environment Variables:\n";
+} elsif (!defined $opt{'mode'} or $AFSBACKUP eq "" or defined $opt{'h'}) {
+	print "Usage: $0 [-h] [--help] [--force-hostname HOSTNAME] [--config /path/to/config]\n";
+	print "-m|--mode [tsm|shadow|vosbackup|vosrelease|vosdump]\n\n";
 	print "\tAFSBACKUP -- root directory containing etc/ and var/\n";
-	print "\tVOSBACKUP_CMD -- command to use to perform vos backup instead of 'vos backup'\n";
 	print "\n";
 	exit 0;
 }
 
-my $total_starttime = time();
+my $total_starttime = time;
 
-if (!$opt_quiet) {
-	print "=== afs-backup.pl ===\n\n";
+sub process_config(\%) {
+	my ($c) = @_;
+	# get rid of any trailing slashes in basepath
+	$c->{'basepath'} =~ s/\/$//;
+
+#	# add basepath to relative paths for vosbackup
+#	my ($newkey, $oldkey);
+#	foreach $oldkey (keys %{$c->{'vosbackup'}{'path'}}) {
+#		$oldkey =~ s/^\s+//;
+#		$oldkey =~ s/\s+$//;
+#		if ($oldkey !~ /^\//) {
+#			my $pre = '';
+#			if ($oldkey =~ m/^!/) {
+#				$oldkey =~ s/^!//;
+#				$pre = '!';
+#			}
+#			$newkey = $pre . $c->{'basepath'} . '/' . $oldkey;
+#		}
+#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
+#		$oldkey =~ s/\/$//; # remove any trailing /'s
+#		
+#		$c->{'vosbackup'}{'path'}{$newkey} = delete $c->{'vosbackup'}{'path'}{$oldkey};
+#	}
+#	# add basepath to relative paths for tsm backup
+#	foreach $oldkey (keys %{$c->{'tsm'}{'backup'}{'path'}}) {
+#		$oldkey =~ s/^\s+//;
+#		$oldkey =~ s/\s+$//;
+#		if ($oldkey !~ /^\//) {
+#			my $pre = '';
+#			if ($oldkey =~ m/^!/) {
+#				$oldkey =~ s/^!//;
+#				$pre = '!';
+#			}
+#			$newkey = $pre . $c->{'basepath'} . '/' . $oldkey;
+#		}
+#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
+#		$oldkey =~ s/\/$//; # remove any trailing /'s
+#		
+#		$c->{'tsm'}{'backup'}{'path'}{$newkey} = delete $c->{'tsm'}{'backup'}{'path'}{$oldkey};
+#	}
+#	# add basepath to relative paths for tsm policy
+#	foreach $oldkey (keys %{$c->{'tsm'}{'policy'}{'path'}}) {
+#		$oldkey =~ s/^\s+//;
+#		$oldkey =~ s/\s+$//;
+#		if ($oldkey !~ /^\//) {
+#			$newkey = $c->{'basepath'} . '/' . $oldkey;
+#		}
+#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
+#		$oldkey =~ s/\/$//; # remove any trailing /'s
+#		
+#		$c->{'tsm'}{'policy'}{'path'}{$newkey} = delete $c->{'tsm'}{'policy'}{'path'}{$oldkey};
+#	}
+	
+	return %$c;
 }
 
+##
+## configuration
+##
 use Config::General;
-my $conf = new Config::General("$afsbackup/etc/hosts/$shorthostname/config.cfg");
+
+# default config
+my $defconf = new Config::General(-AutoTrue => 1, -MergeDuplicateOptions => 1, -MergeDuplicateBlocks => 1,
+	-ConfigFile => "$AFSBACKUP/etc/default.cfg");
+if (!$defconf) {
+	print "Failed to read default config file.\n";
+	exit 1;
+}
+
+# allow config file override from command line
+my $configfile;
+if (defined $opt{'config'} and $opt{'config'} ne '') {
+	$configfile = $opt{'config'};
+} else {
+	$configfile = "$AFSBACKUP/etc/hosts/$shorthostname/config.cfg";
+}
+my $conf = new Config::General(-AutoTrue => 1, -DefaultConfig => \$defconf, -MergeDuplicateOptions => 1, -MergeDuplicateBlocks => 1, 
+	-ConfigFile => $configfile);
 if (!$conf) {
 	print "Failed to read config file.\n";
 	exit 1;
 }
-my %c = $conf->getall;
 
-# get rid of any trailing slashes in basepath
-$c{'basepath'} =~ s/\/$//;
-foreach (keys %{$c{'vosbackup'}{'backup'}{'path'}}) {
-	if ($_ !~ /^\//) {
-		$_ = $c{'basepath'} . '/' . $_;
-	}
+my %c = $conf->getall;
+%c = process_config(%c);
+
+if (!$c{'quiet'}) {
+	print "= afs-backup.pl =\n\n";
 }
 
-if ($opt_verbose) {
-	print "afsbackup = $afsbackup\n";
+
+if ($c{'verbose'}) {
+	print "afsbackup = $AFSBACKUP\n";
 	print "hostname = $hostname\n";
-	print "shorthostname = $shorthostname\n\n";
 	use Data::Dumper;
-	print "\n=== Configuration ===\n";
+	print "\n== Configuration ==\n";
 	print Dumper(\%c);
 }
 
-# read in mounts-by-path and mounts-by-volume
-my (%mounts_by_path, %mounts_by_volume);
-if ($mode ne 'find-mounts') {
-	# mounts-by-foo is created either weekly or nightly, probably weekly
-	if ($opt_usevolmountsdb) {
-		use VolmountsDB;
+use VolmountsDB;
+my $vdb = VolmountsDB->new(
+	$c{'volmountsdb'}{'user'},
+	$c{'volmountsdb'}{'password'},
+	$c{'volmountsdb'}{'host'},
+	$c{'volmountsdb'}{'db'},
+	$c{'basepath'} . '/'
+);
+if (!$vdb) {
+	print "Failed to connect to volmountsdb!\n";
+	exit 1;
+}
+$vdb->fetch_mounts();
+my %mounts_by_path = $vdb->get_mounts_by_path();
+my %mounts_by_volume = $vdb->get_mounts_by_vol();
 
-		my $vdb = VolmountsDB->new(
-			$c{'volmountsdb'}{'user'},
-			$c{'volmountsdb'}{'password'},
-			$c{'volmountsdb'}{'host'},
-			$c{'volmountsdb'}{'db'},
-			$c{'basepath'} . '/'
-		);
-		if (!$vdb) {
-			print "Failed to connect to volmountsdb!\n";
-			exit 1;
-		}
-		%mounts_by_path = $vdb->get_mounts_by_path();
-		%mounts_by_volume = $vdb->get_mounts_by_vol();
-
-	} else {
-		%mounts_by_path = read_mounts_by_path("$afsbackup/var/mounts/mounts-by-path");
-		%mounts_by_volume = read_mounts_by_volume("$afsbackup/var/mounts/mounts-by-volume");
+if (keys(%mounts_by_path) <= 0 or keys(%mounts_by_volume) <= 0) {
+	print "No mounts found! This is bad.\n";
+	exit 1;
+}
+if ($c{'verbose'}) {
+	print "Mounts by path:\n";
+	foreach my $path (sort keys %mounts_by_path) {
+		printf "\t%s = %s\n", $path, $mounts_by_path{$path}{'volname'};
 	}
 
-	if (keys(%mounts_by_path) le 0 or keys(%mounts_by_volume) le 0) {
-		print "No mounts found! This is bad.\n";
-		exit 1;
-	}
-	if ($opt_verbose) {
-		print "Mounts by path:\n";
-		foreach my $path (sort keys %mounts_by_path) {
-			printf "\t%s = %s\n", $path, $mounts_by_path{$path}{'volname'};
-		}
-
-		print "Mounts by volume:\n";
-		foreach my $volume (sort keys %mounts_by_volume) {
-			printf "\t%s (%s) = \n", $volume, $mounts_by_volume{$volume}{'cell'};
-			foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
-					printf "\t\t%s %s\n", $mounts_by_volume{$volume}{'paths'}{$path}, $path;
-			}
+	print "Mounts by volume:\n";
+	foreach my $volume (sort keys %mounts_by_volume) {
+		printf "\t%s (%s) = \n", $volume, $mounts_by_volume{$volume}{'cell'};
+		foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
+				printf "\t\t%s %s\n", $mounts_by_volume{$volume}{'paths'}{$path}, $path;
 		}
 	}
 }
 
 my $exit = 0;
 # switch over $mode
-if ($mode eq 'tsm') {
+if ($opt{'mode'} eq 'tsm') {
 	print "\nRequested mode tsm\n";
 	$exit = mode_tsm();
-} elsif ($mode eq 'vosbackup') {
+} elsif ($opt{'mode'} eq 'vosbackup') {
 	print "\nRequested mode vosbackup\n";
 	$exit = mode_vosbackup();
-} elsif ($mode eq 'find-mounts') {
-	print "\nRequested mode find-mounts\n";
-	if (@ARGV ne 1 or $ARGV[0] !~ /^\//) {
-		print "-m find-mounts takes one argument: absolute path to traverse\n\n";
-		exit 1;
-	}
-	$exit = mode_find_mounts($ARGV[0]);
 } else {
-	print "\nInvalid mode: $mode\n\n";
+	print "\nInvalid mode: $opt{'mode'}\n\n";
 	exit 1;
 }
 
-if ($opt_timing) {
+if ($c{'timing'}) {
 	printf "Execution time: %s s\n", time - $total_starttime;
 }
 
-print "$mode returned $exit\n";
+print "$opt{'mode'} returned $exit\n";
 exit $exit;
+
 
 # accepts mounts_by_path-like hashref, hash of regexes to check, keyed by regex
 # returns: hash of volumes to back up, value -1 means explicitly don't backup
@@ -186,8 +223,6 @@ sub match_by_path(\%\%) {
 			# normalize paths
 			$path =~ s/\/+/\//; # get rid of duplicate /'s
 			$path =~ s/\/$//; # remove any trailing /'s
-			$regex =~ s/\/+/\//; # get rid of duplicate /'s
-			$regex =~ s/\/$//; # remove any trailing /'s
 			if ($path =~ m/$regex/) {
 				if ($exclude_from_backup) {
 					$return{$volume} = -1;
@@ -247,9 +282,11 @@ sub exclude_matched(%) {
 	my (%in) = @_;
 
 	my %return;
-	foreach my $volume (keys %in) {
-		if ($in{$volume} gt 0) {
+	foreach my $volume (sort keys %in) {
+		if ($in{$volume} > 0) {
 			$return{$volume} = 1;
+		} elsif ($c{'verbose'}) {
+			print "exclude_matched() Explicitly excluding volume $volume\n";
 		}
 	}
 	return %return;
@@ -259,8 +296,8 @@ sub exclude_matched(%) {
 sub exclude_lastbackup(\%$) {
 	my ($in, $mode) = @_;
 	my ($volume_to_check, %return);
-	foreach my $volume (keys %$in ) {
-		if ($opt_usedotbackup) {
+	foreach my $volume (sort keys %$in ) {
+		if ($c{'tsm'}{'dotbackup'}) {
 			$volume_to_check = "$volume.backup";
 		} else {
 			$volume_to_check = $volume;
@@ -268,43 +305,113 @@ sub exclude_lastbackup(\%$) {
 		# not checking the .backup volume means we share lastupdate times between foo and foo.backup
 		# but we could lose data when switching to use .backup if the volume is updated between the time we
 		# backed up the .backup and the time we switched
-		if (get_vol_updatedate($volume_to_check) gt get_lastbackup($mode, $volume)) {
+		if (get_vol_updatedate($volume_to_check) > get_lastbackup($mode, $volume)) {
 			$return{$volume} = 1;
-		} else {
-			if (!$opt_quiet) {
-				print "Skipping volume $volume ($volume_to_check) because it hasn't been updated since it was last backed up\n";
-			}
+		} elsif ($c{'verbose'}) {
+			print "exclude_lastbackup() Skipping volume $volume ($volume_to_check)\n";
 		}
 	}
 	return %return;
 }
 
 ##
+## miscellaneous functions
+##
+
+sub cmd($) {
+	my @command = @_;
+	my (@output, $status, $starttime, $delta_t);
+
+	if ($c{'pretend'}) {
+		printf "[cmd] %s\n", @command;
+		return 1;
+	} elsif ($c{'timing'}) {
+		$starttime = time();
+	}
+
+	$| = 1;
+	my $pid = open (OUT, '-|');
+	if (!defined $pid) {
+		die "unable to fork: $!";
+	} elsif ($pid eq 0) {
+		open (STDERR, '>&STDOUT') or die "cannot dup stdout: $!";
+		exec @command or print "cannot exec $command[0]: $!";
+	} else {
+		while (<OUT>) {
+			if (! $c{'quiet'}) {
+				print "$_";
+			}
+			push (@output, $_);
+		}
+		waitpid ($pid, 0);
+		$status = $?;
+		close OUT;
+		if ($c{'timing'}) {
+			$delta_t = time - $starttime;
+			if ($delta_t > 5) {
+				printf "(%s s)\n", $delta_t;
+			}
+		}
+	}
+	return ($status == 0);
+}
+
+sub get_lastbackup($$) {
+	my ($mode, $volume) = @_;
+	my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
+	if ( -e "$file") {
+		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
+		local $_;
+		while (<HANDLE>) {
+			next if /^\s*\#/; # skip comments
+			next if /^\s*$/; # skip blank lines
+			s/\n//;
+			close (HANDLE);
+			return $_;
+		}
+	}
+	return 0;
+}
+
+sub set_lastbackup($$) {
+	if (!$c{'pretend'}) {
+		my ($mode, $volume) = @_;
+		my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
+		open (HANDLE, ">$file") or print "cannot open file $file: $!\n";
+		print HANDLE time;
+		close (HANDLE);
+	}
+}
+
+sub get_vol_updatedate($) {
+	my ($volume) = @_;
+	foreach (`vos exam -format $volume 2>&1`) {
+		if (m/updateDate\s+(.+?)\s+.*$/) {
+			return $1;
+		}
+	}
+	return 0;
+}
+
+##
 ## TSM mode
 ##
 sub mode_tsm {
-	# massage config
-	foreach (keys %{$c{'tsm'}{'backup'}{'path'}}) {
-		if ($_ !~ /^\//) {
-			$_ = $c{'basepath'} . '/' . $_;
-		}
-	}
-
 	# start writing dsm.sys
-	my $dsmsys = "$afsbackup/var/tmp/dsm.sys.$shorthostname";
+	my $dsmsys = "$AFSBACKUP/var/tmp/dsm.sys.$shorthostname";
 	if ( -e $dsmsys) {
 		cmd("rm -f $dsmsys");
 	}
-	if ( -e "$afsbackup/etc/common/dsm.sys.head") {
-		cmd("cp $afsbackup/etc/common/dsm.sys.head $dsmsys");
+	if ( -e "$AFSBACKUP/etc/common/dsm.sys.head") {
+		cmd("cp $AFSBACKUP/etc/common/dsm.sys.head $dsmsys");
 	}
-	if ( ! -e "$afsbackup/etc/hosts/$shorthostname/dsm.sys.head") {
-		print "$afsbackup/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
+	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head") {
+		print "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
 		exit 1;
 	}
-	cmd("cat $afsbackup/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
+	cmd("cat $AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
 
-	if ( -e "$dsmsys" or $opt_pretend) {
+	if ( -e "$dsmsys" or $c{'pretend'}) {
 		open (DSMSYS, '>>', $dsmsys);
 		#print DSMSYS "INCLEXCL $inclexcl\n";
 		# virtualmounts based on all afs mount points
@@ -316,7 +423,7 @@ sub mode_tsm {
 			next if ! -d $_; 			
 			my $abspath = $_;
 			printf DSMSYS "VirtualMountPoint %s\n", $abspath;
-			if ($opt_usedotbackup) {
+			if ($c{'dotbackup'}) {
 				my $relative_path = $abspath;
 				$relative_path =~ s/$c{'basepath'}//;
 				# when using afsd -backuptree, don't define virtualm's for .backup mounts
@@ -336,19 +443,22 @@ sub mode_tsm {
 	my %backup_by_volume = match_by_volume(%mounts_by_volume, %{$c{'tsm'}{'backup'}{'volume'}});
 	my %backup_matched = add_match_by(%backup_by_path, %backup_by_volume);
 	
+	my $backup_matched_num = keys %backup_matched;
 	# remove volumes that were excluded (value < 0)
 	%backup_matched = exclude_matched(%backup_matched);
-	%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
+	if ($c{'lastbackup'}) {
+		%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
+	}
 
 	# get %backup_paths based on %backup_volumes, and the shortest normal path
 	my (%backup_paths);
 	foreach my $volume (keys %backup_matched) {
 		foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
-			next if $mounts_by_volume{$volume}{'paths'}{$path} ne '#'; # skip explicit RW mounts
-			if (defined($backup_paths{$volume}) 
-				and (length($mounts_by_volume{$volume}{'paths'}{$path}) 
-					lt length($backup_paths{$volume}))) {
+#			next if $mounts_by_volume{$volume}{'paths'}{$path} ne '#'; # skip explicit RW mounts
+			if (defined($backup_paths{$volume})) {
+				if (length($path) < length($backup_paths{$volume})) {
 					$backup_paths{$volume} = $path;
+				}
 			} else {
 				$backup_paths{$volume} = $path;
 			}
@@ -400,15 +510,13 @@ sub mode_tsm {
 	}
 			
 
-	if (!$opt_quiet) {
-		print "\n=== Paths/mountpoints to backup ===\n";
-		print "PATH | VOLUME | MGMTCLASS\n";
-		foreach my $volume (sort keys %backup_paths) {
-			printf "%s | %s | %s\n", $backup_paths{$volume}, $volume, $policy_by_volume{$volume};
-		}
-		print "TOTAL: " . keys(%backup_paths) . " volumes selected out of " . keys(%backup_matched) . " candidate volumes. \n";
-		print "There are " . keys(%mounts_by_volume) . " volumes total mounted within the cell.\n";
+	print "\n=== Paths/mountpoints to backup ===\n";
+	print "PATH | VOLUME | MGMTCLASS\n";
+	foreach my $volume (sort keys %backup_paths) {
+		printf "%s | %s | %s\n", $backup_paths{$volume}, $volume, $policy_by_volume{$volume};
 	}
+	print "TOTAL: " . keys(%backup_paths) . " volumes selected out of " . $backup_matched_num . " candidate volumes. \n";
+	print "There are " . keys(%mounts_by_volume) . " volumes total mounted within the cell.\n\n";
 
 	# default management class
 	if ($c{'tsm'}{'policy'}{'default'} ne "") {
@@ -423,8 +531,8 @@ sub mode_tsm {
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
-	cmd("cat $afsbackup/etc/common/exclude.list >> $dsmsys");
-	cmd("cat $afsbackup/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
+	cmd("cat $AFSBACKUP/etc/common/exclude.list >> $dsmsys");
+	cmd("cat $AFSBACKUP/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
 	close (DSMSYS); # close dsm.sys.$tsmnode
 
 	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")) {
@@ -435,49 +543,49 @@ sub mode_tsm {
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
 	# then mount each volume
-	if ($opt_usedotbackup) {
-		if (!$opt_quiet) {
+	if ($c{'tsm'}{'dotbackup'}) {
+		if (!$c{'quiet'}) {
 			print "\n=== Creating .backup volumes if needed ===\n";
 		} 
 		foreach my $v (sort keys %backup_paths) {
-			if (!$opt_quiet) {
+			if (!$c{'quiet'}) {
 				print "Checking for BK volume for $v ...\n";
 			}
 			if (! cmd("vos exam $v.backup >/dev/null 2>&1")) {
-				if ($opt_verbose) {
+				if ($c{'verbose'}) {
 					print "No backup volume for $v. Will attempt to create.\n";
-					cmd("$vosbackup_cmd $v");
+					cmd("$c{'commands'}{'vosbackup'} $v");
 				}
 			}
 		}
 	}
 
-	if ($opt_usedotbackup) {
+	if ($c{'tsm'}{'dotbackup'}) {
 		cmd("fs rmm $c{'tsm'}{'tmp-mount-path'}/root.cell >/dev/null 2>&1");
 		cmd("fs mkm $c{'tsm'}{'tmp-mount-path'}/root.cell root.cell.backup");
 	}
 
 	# dump vldb
-	if (!$opt_nodumpvldb) {
-		print "\n=== Dumping VLDB metadata to $afsbackup/var/vldb/vldb.date ===\n";
-		cmd("dumpvldb.sh $afsbackup/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
+	if ($c{'tsm'}{'dumpvldb'}) {
+		print "\n=== Dumping VLDB metadata to $AFSBACKUP/var/vldb/vldb.date ===\n";
+		cmd("dumpvldb.sh $AFSBACKUP/var/vldb/vldb.`date +%Y%m%d-%H%M%S`");
 	}
 
 	# dump acls
-	if (!$opt_nodumpacl) {
+	if ($c{'tsm'}{'dumpacls'}) {
 		print "\n=== Dumping ACLs ===\n";
 		foreach my $v (sort keys %backup_paths) {
 			printf "[acl] %s (%s)\n", $backup_paths{$v}, $v;
 			my $path;
-			if ($opt_usedotbackup) {
+			if ($c{'tsm'}{'dotbackup'}) {
 				$path = $c{'tsm'}{'tmp-mount-path'} . '/' . $v;
 				cmd("fs rmm $path >/dev/null 2>&1");
 				cmd("fs mkm $path $v.backup");
 			} else {
 				$path = $backup_paths{$v};
 			}
-			cmd("dumpacls.pl $path > $afsbackup/var/acl/$v 2>/dev/null");
-			if ($opt_usedotbackup) {
+			cmd("dumpacls.pl $path > $AFSBACKUP/var/acl/$v 2>/dev/null");
+			if ($c{'tsm'}{'dotbackup'}) {
 				cmd("fs rmm $path >/dev/null 2>&1");
 			}
 		}
@@ -485,13 +593,13 @@ sub mode_tsm {
 
 	# run dsmc incremental
 	print "\n=== Running dsmc incremental ===\n";
-	cmd("mv $afsbackup/var/log/dsmc.log.$shorthostname $afsbackup/var/log/dsmc.log.$shorthostname.last ; 
-		mv $afsbackup/var/log/dsmc.error.$shorthostname $afsbackup/var/log/dsmc.error.$shorthostname.last");
+	cmd("mv $AFSBACKUP/var/log/dsmc.log.$shorthostname $AFSBACKUP/var/log/dsmc.log.$shorthostname.last ; 
+		mv $AFSBACKUP/var/log/dsmc.error.$shorthostname $AFSBACKUP/var/log/dsmc.error.$shorthostname.last");
 
 	my $snapshotroot='';
 	foreach my $v (sort keys %backup_paths) {
 		printf "[dsmc] %s (%s)\n", $backup_paths{$v}, $v;
-		if ($opt_usedotbackup) {
+		if ($c{'tsm'}{'dotbackup'}) {
 			if ($backup_paths{$v} eq $c{'basepath'}) {
 				$snapshotroot = $c{'tsm'}{'tmp-mount-path'} . '/root.cell';
 			} else {
@@ -504,9 +612,9 @@ sub mode_tsm {
 		my $command = sprintf("dsmc incremental %s %s >> %s 2>&1",
 			$backup_paths{$v}, 
 			$snapshotroot,
-			$afsbackup . '/var/log/dsmc.log.' . $shorthostname,
-			$afsbackup . '/var/log/dsmc.error.' . $shorthostname);
-		if (!$opt_nodsmc) {
+			$AFSBACKUP . '/var/log/dsmc.log.' . $shorthostname,
+			$AFSBACKUP . '/var/log/dsmc.error.' . $shorthostname);
+		if ($c{'tsm'}{'dsmc'}) {
 			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
 			set_lastbackup('tsm', $v);
@@ -516,33 +624,6 @@ sub mode_tsm {
 	}
 
 } # END mode_tsm()
-
-
-##
-## find-mounts mode
-##
-sub mode_find_mounts {
-	my ($path) = @_;
-	$path =~ s/\/$//; # get rid of trailing /
-	my $filename = $path;
-	$filename =~ s/^\///; # get rid of leading /
-	$filename =~ s/\//-/g; # replace remaining /'s with -
-	if (!$opt_quiet) {
-		print "Going to get mounts for $path\n";
-		print "Mounts will be put in $afsbackup/var/mounts/$filename-* and mounts-by-* will be updated\n";
-	}
-	if (cmd("afs-find-mounts.pl -lm $path $afsbackup/var/mounts/TMP-$filename")) {
-		cmd("mv $afsbackup/var/mounts/TMP-$filename-by-volume $afsbackup/var/mounts/$filename-by-volume");
-		cmd("mv $afsbackup/var/mounts/TMP-$filename-by-mount $afsbackup/var/mounts/$filename-by-mount");
-
-		cmd("cat $afsbackup/var/mounts/*-by-mount > $afsbackup/var/mounts/mounts-by-path 2>/dev/null");
-		cmd("cat $afsbackup/var/mounts/*-by-volume > $afsbackup/var/mounts/mounts-by-volume 2>/dev/null");
-		return 0;
-	}
-	print "afs-find-mounts.pl failed for some reason\n";
-	return 1;
-
-} # END sub mode_find_mounts
 
 
 ##
@@ -559,7 +640,7 @@ sub mode_vosbackup {
 	%backup_matched = exclude_matched(%backup_matched);
 	%backup_matched = exclude_lastbackup(%backup_matched, 'vosbackup');
 	
-	if (!$opt_quiet) {
+	if (!$c{'quiet'}) {
 		print "\n=== volumes to vos backup ===\n";
 		print "VOLUME\n";
 		foreach (sort keys %backup_matched) {
@@ -571,10 +652,8 @@ sub mode_vosbackup {
 	print "\n=== running vos backup ===\n";
 	# actually run the vos backup command
 	foreach my $volume (sort keys %backup_matched) {
-		if (!$opt_quiet) {
-			print "$vosbackup_cmd $volume\n";
-		}
-		if (!cmd("$vosbackup_cmd $volume")) {
+		print "$c{'commands'}{'vosbackup'} $volume\n";
+		if (!cmd("$c{'commands'}{'vosbackup'} $volume")) {
 			print "\tfailed\n";
 			$return = 1;
 		} else {
@@ -585,178 +664,6 @@ sub mode_vosbackup {
 } # END sub mode_vosbackup()
 
 
-##
-## miscellaneous functions
-##
-
-sub cmd {
-	my @command = @_;
-	my (@output, $status, $starttime, $delta_t);
-
-	if ($opt_pretend) {
-		printf "[cmd] %s\n", @command;
-		return 1;
-	} elsif ($opt_timing) {
-		$starttime = time();
-	}
-
-	$| = 1;
-	my $pid = open (OUT, '-|');
-	if (!defined $pid) {
-		die "unable to fork: $!";
-	} elsif ($pid eq 0) {
-		open (STDERR, '>&STDOUT') or die "cannot dup stdout: $!";
-		exec @command or print "cannot exec $command[0]: $!";
-	} else {
-		while (<OUT>) {
-			if (! $opt_quiet) {
-				print "$_";
-			}
-			push (@output, $_);
-		}
-		waitpid ($pid, 0);
-		$status = $?;
-		close OUT;
-		if ($opt_timing) {
-			$delta_t = time - $starttime;
-			if ($delta_t > 5) {
-				printf "(%s s)\n", $delta_t;
-			}
-		}
-	}
-	return ($status == 0);
-}
-
-sub read_file_single {
-	my ($file) = @_;
-	if ($opt_verbose) {
-		print "reading in $file\n";
-	}
-	if ( -e "$file" ) {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		local $_;
-		while (<HANDLE>) {
-			next if /^\s*\#/; # skip comments
-			next if /^\s*$/; # skip blank lines
-			s/\n//;
-			return $_;
-		}
-	} else {
-		return 0;
-	}
-}
-
-sub read_file_multi {
-	my ($file) = @_;
-	my @return = ();
-	if ($opt_verbose) {
-		print "reading in $file\n";
-	}
-	if ( -e "$file" ) {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		local $_;
-		while (<HANDLE>) {
-			next if /^\s*\#/; # skip comments
-			next if /^\s*$/; # skip blank lines
-			s/\n//;
-			push @return, $_; 
-		}
-	}
-	return @return;
-}
-
-sub read_mounts_by_volume {
-	my ($file) = @_;
-	my %return;
-	my @paths = ();
-	my ($vol, $cell, $path, $type);
-	if ( -e "$file" ) {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		local $_;
-		while (<HANDLE>) {
-			# this shouldn't happen, but skip path lines
-			next if /^\s*\#/;
-			next if /^\s*\%/;
-			# get the volume|cell line
-			s/\n//;
-			($vol, $cell) = split(/\|/, $_);
-			@paths = (); # clear the paths
-			while (<HANDLE>) {
-				last if /^\s*$/; # blank lines mark end of this volume block
-				# get the paths
-				s/\n//;
-				s/^\s*//;
-				push @paths, $_;
-			}
-			$return{$vol}{'cell'} = $cell;
-			foreach (@paths) {
-				($type, $path) = split(/\s+/, $_);
-				$return{$vol}{'paths'}{$path} = $type;
-			}
-		}
-	}
-	return %return;
-}
-
-sub read_mounts_by_path {
-	my ($file) = @_;
-	my %return;
-	my @tmp_array;
-	if ( -e "$file" ) {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		while (<HANDLE>) {
-			next if /^\s*$/; # skip blank lines
-			s/\n//;
-			push @tmp_array, [ split(/\|/, $_) ];
-		}
-	}
-	for my $i (0 .. $#tmp_array) {
-		my ($mntpt, $type, $volume, $cell) = @{$tmp_array[$i]};
-		$return{$mntpt} = { 
-			type => $type,
-			volume => $volume,
-			cell => $cell
-		}
-	}
-	return %return;
-}
-
-sub get_lastbackup {
-	my ($type, $volume) = @_;
-	my $file = $afsbackup . '/var/lastbackup/' . $volume . '.' . $type;
-	if ( -e "$file" and !$opt_nolastbackup) {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		local $_;
-		while (<HANDLE>) {
-			next if /^\s*\#/; # skip comments
-			next if /^\s*$/; # skip blank lines
-			s/\n//;
-			close (HANDLE);
-			return $_;
-		}
-	}
-	return 0;
-}
-
-sub set_lastbackup {
-	if (!$opt_pretend) {
-		my ($type, $volume) = @_;
-		my $file = $afsbackup . '/var/lastbackup/' . $volume . '.' . $type;
-		open (HANDLE, ">$file") or print "cannot open file $file: $!\n";
-		print HANDLE time;
-		close (HANDLE);
-	}
-}
-
-sub get_vol_updatedate {
-	my ($volume) = @_;
-	foreach (`vos exam -format $volume 2>&1`) {
-		if (m/updateDate\s+(.+?)$/) {
-			return $1;
-		}
-	}
-	return 0;
-}
 
 
 __END__
