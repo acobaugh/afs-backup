@@ -1,3 +1,9 @@
 - update POD 
 - come up with spiffy name for it?
 - stop using cmd() for copying/cat'ing/creating/rm'ing files
+- subroutines that depend on global vars:
+	- exclude_lastbackup()
+	- cmd()
+	- get_lastbackup()
+	- set_lastbackup()
+	- get_vol_updatedate()
