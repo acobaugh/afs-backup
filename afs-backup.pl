@@ -359,15 +359,23 @@ sub cmd($) {
 sub get_lastbackup($$) {
 	my ($mode, $volume) = @_;
 	my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
-	if ( -e "$file") {
-		open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
-		local $_;
-		while (<HANDLE>) {
-			next if /^\s*\#/; # skip comments
-			next if /^\s*$/; # skip blank lines
-			s/\n//;
-			close (HANDLE);
-			return $_;
+	if ($mode eq "vosbackup") {
+		foreach (`vos exam -format $volume 2>&1`) {
+			if (m/backupDate\s+(.+?)\s+.*$/) {
+				return $1;
+			}
+		}
+	} else {
+		if ( -e "$file") {
+			open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
+			local $_;
+			while (<HANDLE>) {
+				next if /^\s*\#/; # skip comments
+				next if /^\s*$/; # skip blank lines
+				s/\n//;
+				close (HANDLE);
+				return $_;
+			}
 		}
 	}
 	return 0;
@@ -422,6 +430,7 @@ sub mode_tsm {
 			# This might allow volumes to be backed up that we don't want, so be careful!
 			next if ! -d $_; 			
 			my $abspath = $_;
+			$abspath =~ s/\/$//; # virtualmounts should not have trailing slashes
 			printf DSMSYS "VirtualMountPoint %s\n", $abspath;
 			if ($c{'dotbackup'}) {
 				my $relative_path = $abspath;
@@ -524,10 +533,13 @@ sub mode_tsm {
 	}
 	# per-path management class
 	print DSMSYS "\n* per-path management classes\n";
-	foreach my $v (sort { length $a <=> length $b || $a cmp $b } keys %backup_paths) {
+	foreach my $v (sort { 
+			length $backup_paths{$a} <=> length $backup_paths{$b} 
+			|| $backup_paths{$a} cmp $backup_paths{$b} 
+		} keys %backup_paths) {
 		if ($policy_by_volume{$v} ne '') {
-			printf DSMSYS "INCLUDE %s/* %s\n", $v, $policy_by_volume{$v};
-			printf DSMSYS "INCLUDE %s/.../* %s\n", $v, $policy_by_volume{$v};
+			printf DSMSYS "INCLUDE %s/* %s\n", $backup_paths{$v}, $policy_by_volume{$v};
+			printf DSMSYS "INCLUDE %s/.../* %s\n", $backup_paths{$v}, $policy_by_volume{$v};
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
