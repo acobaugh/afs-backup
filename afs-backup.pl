@@ -612,13 +612,9 @@ sub mode_tsm {
 	# vos backup if not
 	# then mount each volume
 	if ($c{'tsm'}{'dotbackup'}) {
-		if (!$c{'quiet'}) {
-			print "\n=== Creating .backup volumes if needed ===\n";
-		} 
+		print "\n=== Creating .backup volumes if needed ===\n"; 
 		foreach my $v (sort keys %backup_paths) {
-			if (!$c{'quiet'}) {
-				print "Checking for BK volume for $v ...\n";
-			}
+			print "Checking for BK volume for $v ...\n";
 			if (! cmd("vos exam $v.backup >/dev/null 2>&1")) {
 				if ($c{'verbose'}) {
 					print "No backup volume for $v. Will attempt to create.\n";
@@ -716,12 +712,10 @@ sub mode_vosbackup {
 	%backup_matched = exclude_matched(%backup_matched);
 	%backup_matched = exclude_lastbackup(%backup_matched, 'vosbackup');
 	
-	if (!$c{'quiet'}) {
-		print "\n=== volumes to vos backup ===\n";
-		print "VOLUME\n";
-		foreach (sort keys %backup_matched) {
-			printf "%s\n", $_;
-		}
+	print "\n=== volumes to vos backup ===\n";
+	print "VOLUME\n";
+	foreach (sort keys %backup_matched) {
+		printf "%s\n", $_;
 	}
 
 	my $return = 0;
