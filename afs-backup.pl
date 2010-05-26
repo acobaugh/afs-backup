@@ -5,6 +5,7 @@ use warnings;
 
 use Getopt::Long;
 use Sys::Hostname;
+use Time::Local;
 use Fcntl qw(:flock);
 
 open(SELF, "<", $0) or die "Cannot open $0 - $!";
@@ -21,6 +22,7 @@ GetOptions(\%opt,
 	'config=s'	
 );
 
+# hostname stuff
 my $hostname;
 if (defined $opt{'force-hostname'}) {
 	$hostname = $opt{'force-hostname'};
@@ -30,6 +32,7 @@ if (defined $opt{'force-hostname'}) {
 my $shorthostname = $hostname;
 $shorthostname =~ s/\..*//;
 
+# AFSBACKUP
 my $AFSBACKUP = $ENV{'AFSBACKUP'};
 if ($AFSBACKUP !~ m/^\//) {
 	print "AFSBACKUP should really be an absolute path\n\n";
@@ -134,6 +137,9 @@ if (!$conf) {
 
 my %c = $conf->getall;
 %c = process_config(%c);
+
+# runtime variable storage
+my %r = ();
 
 if (!$c{'quiet'}) {
 	print "= afs-backup.pl =\n\n";
@@ -365,6 +371,16 @@ sub get_lastbackup($$) {
 				return $1;
 			}
 		}
+		return 0;
+	} elsif ($mode eq "tsm") {
+		if (exists($r{'tsm_lastincrdate'})) {
+			if (exists($r{'tsm_lastincrdate'}{$volume})) {
+				return $r{'tsm_lastincrdate'}{$volume};
+			} else {
+				return 0;
+			}
+		}
+		return 0;
 	} else {
 		if ( -e "$file") {
 			open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
@@ -399,6 +415,38 @@ sub get_vol_updatedate($) {
 		}
 	}
 	return 0;
+}
+
+# populates $r{'tsm_lastincrdate'}
+sub fetch_tsm_lastincrdate () {
+	$r{'tsm_lastincrdate'} = ();
+	my $count = 0;
+	foreach (`dsmc query filespace`) {
+		if (my ($month, $day, $year, $hour, $min, $sec, $fs) = 
+			$_ =~	m{^\s*\d+\s+([\d]+)/([\d]+)/([\d]+)\s+([\d]+):([\d]+):([\d]+).*?(/\S+)\s*}) {
+			$count++;
+			# if the date isn't all zeros
+			if ($month != 0 and $fs ne "") {
+				my $last_incr_time = timelocal($sec,$min,$hour,$day,--$month,$year);
+				# if this filespace is listed as a mountpoint
+				if (exists($mounts_by_path{$fs . '/'})) {
+					my $fs_volume = $mounts_by_path{$fs . '/'}{'volname'};
+					# if there is already a volume entry
+					if (exists( $r{'tsm_lastincrdate'}{$fs_volume} )) {
+						# update it if the timestamp is newer
+						if ($r{'tsm_lastincrdate'}{$fs_volume} < $last_incr_time) {
+							$r{'tsm_lastincrdate'}{$fs_volume} = $last_incr_time;
+						}
+					} else {
+						$r{'tsm_lastincrdate'}{$fs_volume} = $last_incr_time;
+					}
+				} else {
+					$r{'tsm_abandoned_filespaces'}{$fs} = $last_incr_time;
+				}
+			}
+		}
+	}
+	return $count;
 }
 
 ##
@@ -455,15 +503,23 @@ sub mode_tsm {
 	my $backup_matched_num = keys %backup_matched;
 	# remove volumes that were excluded (value < 0)
 	%backup_matched = exclude_matched(%backup_matched);
+
+	# fetch lastincrdate timestamps from tsm itself
+	my $tsm_fs_num = fetch_tsm_lastincrdate();
+	printf "Fetched the Last Incr Date from TSM for %s filespaces\n", $tsm_fs_num;
 	if ($c{'lastbackup'}) {
-		%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
+		if ($tsm_fs_num > 0) {
+			%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
+		} else {
+			print "lastbackup enabled but no Last Incr Dates were returned from TSM\n. Exiting\n\n";
+			return 1;
+		}
 	}
 
 	# get %backup_paths based on %backup_volumes, and the shortest normal path
 	my (%backup_paths);
 	foreach my $volume (keys %backup_matched) {
 		foreach my $path (keys %{$mounts_by_volume{$volume}{'paths'}}) {
-#			next if $mounts_by_volume{$volume}{'paths'}{$path} ne '#'; # skip explicit RW mounts
 			if (defined($backup_paths{$volume})) {
 				if (length($path) < length($backup_paths{$volume})) {
 					$backup_paths{$volume} = $path;
@@ -629,10 +685,18 @@ sub mode_tsm {
 		if ($c{'tsm'}{'dsmc'}) {
 			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
-			set_lastbackup('tsm', $v);
+			#set_lastbackup('tsm', $v);
 		} else {
 			print "$command\n";
 		}
+	}
+	if (exists($r{'tsm_abandoned_filespaces'})) {
+		print "Filespaces in TSM which are no longer listed as AFS mountpoints:\n";
+		print "FILESPACE | LAST_INCR_DATE\n";
+		foreach my $fs (sort keys %{$r{'tsm_abandoned_filespaces'}}) {
+			printf "%s | %s\n", $fs, $r{'tsm_abandoned_filespaces'}{$fs};
+		}
+		print "\n";
 	}
 
 } # END mode_tsm()
