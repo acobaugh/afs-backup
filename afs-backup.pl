@@ -397,16 +397,6 @@ sub get_lastbackup($$) {
 	return 0;
 }
 
-sub set_lastbackup($$) {
-	if (!$c{'pretend'}) {
-		my ($mode, $volume) = @_;
-		my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
-		open (HANDLE, ">$file") or print "cannot open file $file: $!\n";
-		print HANDLE time;
-		close (HANDLE);
-	}
-}
-
 sub get_vol_updatedate($) {
 	my ($volume) = @_;
 	foreach (`vos exam -format $volume 2>&1`) {
@@ -681,7 +671,6 @@ sub mode_tsm {
 		if ($c{'tsm'}{'dsmc'}) {
 			# dsmc can return weird values, so we don't check the exit status at all
 			cmd($command);
-			#set_lastbackup('tsm', $v);
 		} else {
 			print "$command\n";
 		}
@@ -726,8 +715,6 @@ sub mode_vosbackup {
 		if (!cmd("$c{'commands'}{'vosbackup'} $volume")) {
 			print "\tfailed\n";
 			$return = 1;
-		} else {
-			set_lastbackup('vosbackup', $volume);
 		}
 	}
 	return $return;
