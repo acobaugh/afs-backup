@@ -8,9 +8,8 @@ use Sys::Hostname;
 use Time::Local;
 use Fcntl qw(:flock);
 
-open(SELF, "<", $0) or die "Cannot open $0 - $!";
-flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
-
+#open(SELF, "<", $0) or die "Cannot open $0 - $!";
+#flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
 
 my %opt = ();
 Getopt::Long::Configure('bundling');
