@@ -8,3 +8,5 @@
 	- set_lastbackup()
 	- get_vol_updatedate()
 - Scheduler ? How do we determine what to backup and when or how often?
+- `dsmc query filespace` in fetch_tsm_lastincrdate() will return to an interactive prompt if there is a syntax error in dsm.{opt|sys}, so we need a
+  way to catch this, or timeout.
