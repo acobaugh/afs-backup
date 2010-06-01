@@ -500,7 +500,7 @@ sub mode_tsm {
 		if ($tsm_fs_num > 0) {
 			%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
 		} else {
-			print "lastbackup enabled but no Last Incr Dates were returned from TSM\n. Exiting\n\n";
+			print "lastbackup enabled but no Last Incr Dates were returned from TSM. Exiting\n\n";
 			return 1;
 		}
 	}
