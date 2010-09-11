@@ -7,6 +7,7 @@ use Getopt::Long;
 use Sys::Hostname;
 use Time::Local;
 use Fcntl qw(:flock);
+use File::Copy;
 
 #open(SELF, "<", $0) or die "Cannot open $0 - $!";
 #flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
@@ -55,55 +56,6 @@ sub process_config(\%) {
 	my ($c) = @_;
 	# get rid of any trailing slashes in basepath
 	$c->{'basepath'} =~ s/\/$//;
-
-#	# add basepath to relative paths for vosbackup
-#	my ($newkey, $oldkey);
-#	foreach $oldkey (keys %{$c->{'vosbackup'}{'path'}}) {
-#		$oldkey =~ s/^\s+//;
-#		$oldkey =~ s/\s+$//;
-#		if ($oldkey !~ /^\//) {
-#			my $pre = '';
-#			if ($oldkey =~ m/^!/) {
-#				$oldkey =~ s/^!//;
-#				$pre = '!';
-#			}
-#			$newkey = $pre . $c->{'basepath'} . '/' . $oldkey;
-#		}
-#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
-#		$oldkey =~ s/\/$//; # remove any trailing /'s
-#		
-#		$c->{'vosbackup'}{'path'}{$newkey} = delete $c->{'vosbackup'}{'path'}{$oldkey};
-#	}
-#	# add basepath to relative paths for tsm backup
-#	foreach $oldkey (keys %{$c->{'tsm'}{'backup'}{'path'}}) {
-#		$oldkey =~ s/^\s+//;
-#		$oldkey =~ s/\s+$//;
-#		if ($oldkey !~ /^\//) {
-#			my $pre = '';
-#			if ($oldkey =~ m/^!/) {
-#				$oldkey =~ s/^!//;
-#				$pre = '!';
-#			}
-#			$newkey = $pre . $c->{'basepath'} . '/' . $oldkey;
-#		}
-#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
-#		$oldkey =~ s/\/$//; # remove any trailing /'s
-#		
-#		$c->{'tsm'}{'backup'}{'path'}{$newkey} = delete $c->{'tsm'}{'backup'}{'path'}{$oldkey};
-#	}
-#	# add basepath to relative paths for tsm policy
-#	foreach $oldkey (keys %{$c->{'tsm'}{'policy'}{'path'}}) {
-#		$oldkey =~ s/^\s+//;
-#		$oldkey =~ s/\s+$//;
-#		if ($oldkey !~ /^\//) {
-#			$newkey = $c->{'basepath'} . '/' . $oldkey;
-#		}
-#		$oldkey =~ s/\/+/\//; # get rid of duplicate /'s
-#		$oldkey =~ s/\/$//; # remove any trailing /'s
-#		
-#		$c->{'tsm'}{'policy'}{'path'}{$newkey} = delete $c->{'tsm'}{'policy'}{'path'}{$oldkey};
-#	}
-	
 	return %$c;
 }
 
@@ -411,6 +363,9 @@ sub fetch_tsm_lastincrdate () {
 	$r{'tsm_lastincrdate'} = ();
 	my $count = 0;
 	foreach (`dsmc query filespace`) {
+		if ($_ =~ m/^No file spaces for node/) {
+			return -1;
+		}
 		if (my ($month, $day, $year, $hour, $min, $sec, $fs) = 
 			$_ =~	m{^\s*\d+\s+([\d]+)/([\d]+)/([\d]+)\s+([\d]+):([\d]+):([\d]+).*?(/\S+)\s*}) {
 			$count++;
@@ -443,12 +398,12 @@ sub fetch_tsm_lastincrdate () {
 ##
 sub mode_tsm {
 	# start writing dsm.sys
-	my $dsmsys = "$AFSBACKUP/var/tmp/dsm.sys.$shorthostname";
+	my $dsmsys = "/opt/tivoli/tsm/client/ba/bin/dsm.sys";
 	if ( -e $dsmsys) {
 		cmd("rm -f $dsmsys");
 	}
 	if ( -e "$AFSBACKUP/etc/common/dsm.sys.head") {
-		cmd("cp $AFSBACKUP/etc/common/dsm.sys.head $dsmsys");
+		copy("$AFSBACKUP/etc/common/dsm.sys.head", "$dsmsys");
 	}
 	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head") {
 		print "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
@@ -499,9 +454,11 @@ sub mode_tsm {
 	if ($c{'lastbackup'}) {
 		if ($tsm_fs_num > 0) {
 			%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
-		} else {
+		} elsif ($tsm_fs_num == 0) {
 			print "lastbackup enabled but no Last Incr Dates were returned from TSM. Exiting\n\n";
 			return 1;
+		} elsif ($tsm_fs_num == -1) {
+			print "lastbackup enabled, but no filespaces were found in TSM. Perhaps this is a fresh TSM node?\n";
 		}
 	}
 
@@ -592,11 +549,6 @@ sub mode_tsm {
 	cmd("cat $AFSBACKUP/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
 	close (DSMSYS); # close dsm.sys.$tsmnode
 
-	if (! cmd("cp $dsmsys /opt/tivoli/tsm/client/ba/bin/dsm.sys")) {
-		print "Could not copy $dsmsys to /opt/tivoli/tsm/client/ba/bin/dsm.sys !\n";
-		return 1;
-	}
-	
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
 	# then mount each volume
@@ -646,8 +598,8 @@ sub mode_tsm {
 
 	# run dsmc incremental
 	print "\n=== Running dsmc incremental ===\n";
-	cmd("mv $AFSBACKUP/var/log/dsmc.log.$shorthostname $AFSBACKUP/var/log/dsmc.log.$shorthostname.last ; 
-		mv $AFSBACKUP/var/log/dsmc.error.$shorthostname $AFSBACKUP/var/log/dsmc.error.$shorthostname.last");
+	move("$AFSBACKUP/var/log/dsmc.log.$shorthostname", "$AFSBACKUP/var/log/dsmc.log.$shorthostname.last"); 
+	move("$AFSBACKUP/var/log/dsmc.error.$shorthostname", "$AFSBACKUP/var/log/dsmc.error.$shorthostname.last");
 
 	my $snapshotroot='';
 	foreach my $v (sort keys %backup_paths) {
