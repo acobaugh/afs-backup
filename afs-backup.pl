@@ -8,6 +8,8 @@ use Sys::Hostname;
 use Time::Local;
 use Fcntl qw(:flock);
 use File::Copy;
+use Config::General;
+use VolmountsDB;
 
 #open(SELF, "<", $0) or die "Cannot open $0 - $!";
 #flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
@@ -62,7 +64,6 @@ sub process_config(\%) {
 ##
 ## configuration
 ##
-use Config::General;
 
 # default config
 my $defconf = new Config::General(-AutoTrue => 1, -MergeDuplicateOptions => 1, -MergeDuplicateBlocks => 1,
@@ -105,7 +106,6 @@ if ($c{'verbose'}) {
 	print Dumper(\%c);
 }
 
-use VolmountsDB;
 my $vdb = VolmountsDB->new(
 	$c{'volmountsdb'}{'user'},
 	$c{'volmountsdb'}{'password'},
@@ -275,6 +275,7 @@ sub exclude_lastbackup(\%$) {
 ## miscellaneous functions
 ##
 
+# execute a command, return true if command exits 0, false otherwise
 sub cmd($) {
 	my @command = @_;
 	my (@output, $status, $starttime, $delta_t);
@@ -313,6 +314,10 @@ sub cmd($) {
 	return ($status == 0);
 }
 
+# get the lastbackup time for a given volume depending on mode:
+# vosbackup: use backupDate from vos exam -format
+# tsm: use last incr date
+# other: use $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode
 sub get_lastbackup($$) {
 	my ($mode, $volume) = @_;
 	my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
@@ -348,6 +353,7 @@ sub get_lastbackup($$) {
 	return 0;
 }
 
+# return the updateDate for a given volume
 sub get_vol_updatedate($) {
 	my ($volume) = @_;
 	foreach (`vos exam -format $volume 2>&1`) {
@@ -393,53 +399,76 @@ sub fetch_tsm_lastincrdate () {
 	return $count;
 }
 
+# cat one file into another
+sub cat () {
+	my ($file1, $file2) = @_;
+	
+	open (F1, "<$file1");
+	open (F2, "<$file2");
+
+	while (<F1>) {
+		print F2 $_;
+	}
+
+	close(F1);
+	close(F2);
+}
+
 ##
 ## TSM mode
 ##
 sub mode_tsm {
 	# start writing dsm.sys
-	my $dsmsys = "/opt/tivoli/tsm/client/ba/bin/dsm.sys";
-	if ( -e $dsmsys) {
-		cmd("rm -f $dsmsys");
+	if ( -e $c{'dsmsys'}) {
+		unlink $c{'dsmsys'};
 	}
 	if ( -e "$AFSBACKUP/etc/common/dsm.sys.head") {
-		copy("$AFSBACKUP/etc/common/dsm.sys.head", "$dsmsys");
+		copy("$AFSBACKUP/etc/common/dsm.sys.head", "$c{'dsmsys'}") or die "ERROR: $c{'dsmsys'} : $!";
 	}
 	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head") {
-		print "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
+		print "ERROR: $AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
 		exit 1;
 	}
-	cmd("cat $AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head >> $dsmsys");
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head", "$c{'dsmsys'}");
+	
+	# start writing dsm.opt
+	if ( -e $c{'dsmopt'}) {
+		unlink $c{'dsmopt'};
+	}
+	if ( -e "$AFSBACKUP/etc/common/dsm.opt.head") {
+		copy("$AFSBACKUP/etc/common/dsm.opt.head", "$c{'dsmopt'}");
+	}
+	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head") {
+		print "ERROR: $AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head does not exist!\n";
+		exit 1;
+	}
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head", "$c{'dsmopt'}") or die "ERROR: $c{'dsmopt'} : $!";
 
-	if ( -e "$dsmsys" or $c{'pretend'}) {
-		open (DSMSYS, '>>', $dsmsys);
-		#print DSMSYS "INCLEXCL $inclexcl\n";
-		# virtualmounts based on all afs mount points
-		printf DSMSYS "VirtualMountPoint %s\n", $c{'basepath'};
-		printf DSMSYS "VirtualMountPoint /afs\n";
-		foreach (sort keys %mounts_by_path) {
-			# skip mountpoints that we can't access. 
-			# This might allow volumes to be backed up that we don't want, so be careful!
-			next if ! -d $_; 			
-			my $abspath = $_;
-			$abspath =~ s/\/$//; # virtualmounts should not have trailing slashes
-			printf DSMSYS "VirtualMountPoint %s\n", $abspath;
-			if ($c{'dotbackup'}) {
-				my $relative_path = $abspath;
-				$relative_path =~ s/$c{'basepath'}//;
-				# when using afsd -backuptree, don't define virtualm's for .backup mounts
-				# as they already don't exist
-				if ($mounts_by_path{$abspath}{'volname'} !~ m/.+\.backup$/) {
-					printf DSMSYS "VirtualMountPoint %s\n", 
-						$c{'tsm'}{'tmp-mount-path'} . '/root.cell' . $relative_path ;
-				}
+
+	# append VirtualMountPoint's to dsmsys
+	open (DSMSYS, '>>', $c{'dsmsys'});
+	printf DSMSYS "VirtualMountPoint %s\n", $c{'basepath'};
+	printf DSMSYS "VirtualMountPoint /afs\n";
+	foreach (sort keys %mounts_by_path) {
+		# skip mountpoints that we can't access. 
+		# This might allow volumes to be backed up that we don't want, so be careful!
+		next if ! -d $_; 			
+		my $abspath = $_;
+		$abspath =~ s/\/$//; # virtualmounts should not have trailing slashes
+		printf DSMSYS "VirtualMountPoint %s\n", $abspath;
+		if ($c{'dotbackup'}) {
+			my $relative_path = $abspath;
+			$relative_path =~ s/$c{'basepath'}//;
+			# when using afsd -backuptree, don't define virtualm's for .backup mounts
+			# as they already don't exist
+			if ($mounts_by_path{$abspath}{'volname'} !~ m/.+\.backup$/) {
+				printf DSMSYS "VirtualMountPoint %s\n", 
+					$c{'tsm'}{'tmp-mount-path'} . '/root.cell' . $relative_path ;
 			}
 		}
-	} else {
-		print "Failed to create $dsmsys. This shouldn't happen.\n";
-		exit 1;
 	}
 
+	# determine what to backup
 	my %backup_by_path = match_by_path(%mounts_by_path, %{$c{'tsm'}{'backup'}{'path'}});
 	my %backup_by_volume = match_by_volume(%mounts_by_volume, %{$c{'tsm'}{'backup'}{'volume'}});
 	my %backup_matched = add_match_by(%backup_by_path, %backup_by_volume);
@@ -455,10 +484,10 @@ sub mode_tsm {
 		if ($tsm_fs_num > 0) {
 			%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
 		} elsif ($tsm_fs_num == 0) {
-			print "lastbackup enabled but no Last Incr Dates were returned from TSM. Exiting\n\n";
+			print "ERROR: lastbackup enabled but no Last Incr Dates were returned from TSM. Exiting\n\n";
 			return 1;
 		} elsif ($tsm_fs_num == -1) {
-			print "lastbackup enabled, but no filespaces were found in TSM. Perhaps this is a fresh TSM node?\n";
+			print "WARNING: lastbackup enabled, but no filespaces were found in TSM. Perhaps this is a fresh TSM node?\n";
 		}
 	}
 
@@ -483,7 +512,7 @@ sub mode_tsm {
 	
 	# sanity check tsm-policy-order
 	if ($c{'tsm'}{'policy'}{'order'} !~ /(path\s+volume)|(volume\s+path)/) {
-		print "Syntax error in tsm-policy-order. Expecting one of \"path volume\" or \"volume path\"\n";
+		print "ERROR: Syntax error in tsm-policy-order. Expecting one of \"path volume\" or \"volume path\"\n";
 		exit 1;
 	} 
 
@@ -545,9 +574,9 @@ sub mode_tsm {
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
-	cmd("cat $AFSBACKUP/etc/common/exclude.list >> $dsmsys");
-	cmd("cat $AFSBACKUP/etc/hosts/$shorthostname/exclude.list >> $dsmsys");
-	close (DSMSYS); # close dsm.sys.$tsmnode
+	cat("$AFSBACKUP/etc/common/exclude.list", "$c{'dsmsys'}");
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/exclude.list", "$c{'dsmsys'}");
+	close (DSMSYS);
 
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
@@ -634,6 +663,8 @@ sub mode_tsm {
 		}
 		print "\n";
 	}
+
+	return 0;
 
 } # END mode_tsm()
 
