@@ -10,9 +10,7 @@ use Fcntl qw(:flock);
 use File::Copy;
 use Config::General;
 use VolmountsDB;
-
-#open(SELF, "<", $0) or die "Cannot open $0 - $!";
-#flock(SELF, LOCK_EX|LOCK_NB) or die "$0 - Already running.";
+use LockFile::Simple;
 
 my %opt = ();
 Getopt::Long::Configure('bundling');
@@ -97,6 +95,27 @@ if (!$c{'quiet'}) {
 	print "= afs-backup.pl =\n\n";
 }
 
+# lockfile
+sub lockmsg {
+	print "@_\n";
+}
+
+my $lock = LockFile::Simple->make(
+	-ext => '',
+	-autoclean => 1,
+	-max => 10,
+	-delay => 2,
+	-stale => 1,
+	-warn => 2,
+	-hold => 0,
+	-wmin => 2,
+	-wfunc => \&lockmsg,
+	-efunc => \&lockmsg
+);
+if ( ! $lock->lock($c{'lockfile'}) ) {
+	print "Could not lock $c{'lockfile'}\n";
+	exit 1;
+}
 
 if ($c{'verbose'}) {
 	print "afsbackup = $AFSBACKUP\n";
