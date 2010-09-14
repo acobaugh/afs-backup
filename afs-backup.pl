@@ -70,6 +70,7 @@ if (!$defconf) {
 	print "Failed to read default config file.\n";
 	exit 1;
 }
+my %c_default = $defconf->getall;
 
 # allow config file override from command line
 my $configfile;
@@ -78,7 +79,7 @@ if (defined $opt{'config'} and $opt{'config'} ne '') {
 } else {
 	$configfile = "$AFSBACKUP/etc/hosts/$shorthostname/config.cfg";
 }
-my $conf = new Config::General(-AutoTrue => 1, -DefaultConfig => \$defconf, -MergeDuplicateOptions => 1, -MergeDuplicateBlocks => 1, 
+my $conf = new Config::General(-AutoTrue => 1, -DefaultConfig => \%c_default, -MergeDuplicateOptions => 1, -MergeDuplicateBlocks => 1, 
 	-ConfigFile => $configfile);
 if (!$conf) {
 	print "Failed to read config file.\n";
@@ -112,6 +113,10 @@ my $lock = LockFile::Simple->make(
 	-wfunc => \&lockmsg,
 	-efunc => \&lockmsg
 );
+if ( ! defined $c{'lockfile'} ) {
+	print "'lockfile' not defined in config.\n";
+	exit 1;
+} 
 if ( ! $lock->lock($c{'lockfile'}) ) {
 	print "Could not lock $c{'lockfile'}\n";
 	exit 1;
@@ -419,7 +424,7 @@ sub fetch_tsm_lastincrdate () {
 }
 
 # cat one file into another
-sub cat () {
+sub cat ($$) {
 	my ($file1, $file2) = @_;
 	
 	open (F1, "<$file1");
@@ -438,34 +443,34 @@ sub cat () {
 ##
 sub mode_tsm {
 	# start writing dsm.sys
-	if ( -e $c{'dsmsys'}) {
-		unlink $c{'dsmsys'};
+	if ( -e $c{'tsm'}{'dsmsys'}) {
+		unlink $c{'tsm'}{'dsmsys'};
 	}
 	if ( -e "$AFSBACKUP/etc/common/dsm.sys.head") {
-		copy("$AFSBACKUP/etc/common/dsm.sys.head", "$c{'dsmsys'}") or die "ERROR: $c{'dsmsys'} : $!";
+		copy("$AFSBACKUP/etc/common/dsm.sys.head", "$c{'tsm'}{'dsmsys'}") or die "ERROR: $c{'dsmsys'} : $!";
 	}
 	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head") {
 		print "ERROR: $AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head does not exist!\n";
 		exit 1;
 	}
-	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head", "$c{'dsmsys'}");
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.sys.head", "$c{'tsm'}{'dsmsys'}");
 	
 	# start writing dsm.opt
-	if ( -e $c{'dsmopt'}) {
-		unlink $c{'dsmopt'};
+	if ( -e $c{'tsm'}{'dsmopt'}) {
+		unlink $c{'tsm'}{'dsmopt'};
 	}
 	if ( -e "$AFSBACKUP/etc/common/dsm.opt.head") {
-		copy("$AFSBACKUP/etc/common/dsm.opt.head", "$c{'dsmopt'}");
+		copy("$AFSBACKUP/etc/common/dsm.opt.head", "$c{'tsm'}{'dsmopt'}");
 	}
 	if ( ! -e "$AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head") {
 		print "ERROR: $AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head does not exist!\n";
 		exit 1;
 	}
-	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head", "$c{'dsmopt'}") or die "ERROR: $c{'dsmopt'} : $!";
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/dsm.opt.head", "$c{'tsm'}{'dsmopt'}") or die "ERROR: $c{'tsm'}{'dsmopt'} : $!";
 
 
 	# append VirtualMountPoint's to dsmsys
-	open (DSMSYS, '>>', $c{'dsmsys'});
+	open (DSMSYS, '>>', $c{'tsm'}{'dsmsys'});
 	printf DSMSYS "VirtualMountPoint %s\n", $c{'basepath'};
 	printf DSMSYS "VirtualMountPoint /afs\n";
 	foreach (sort keys %mounts_by_path) {
