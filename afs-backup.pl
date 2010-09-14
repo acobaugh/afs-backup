@@ -426,9 +426,10 @@ sub fetch_tsm_lastincrdate () {
 # cat one file into another
 sub cat ($$) {
 	my ($file1, $file2) = @_;
-	
+
+	print "file1 = $file1   file2 = $file2\n";
 	open (F1, "<$file1");
-	open (F2, "<$file2");
+	open (F2, ">>$file2");
 
 	while (<F1>) {
 		print F2 $_;
