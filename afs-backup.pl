@@ -427,16 +427,19 @@ sub fetch_tsm_lastincrdate () {
 sub cat ($$) {
 	my ($file1, $file2) = @_;
 
-	print "file1 = $file1   file2 = $file2\n";
-	open (F1, "<$file1");
-	open (F2, ">>$file2");
+	if ( -e $file1 ) {
+		open (F1, "<$file1");
+		open (F2, ">>$file2");
 
-	while (<F1>) {
-		print F2 $_;
+		while (<F1>) {
+			print F2 $_;
+		}
+
+		close(F1);
+		close(F2);
+	} else { 
+		print "WARNING: cat(): \"$file1\" does not exist\n";
 	}
-
-	close(F1);
-	close(F2);
 }
 
 ##
@@ -599,8 +602,8 @@ sub mode_tsm {
 		}
 	}
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
-	cat("$AFSBACKUP/etc/common/exclude.list", "$c{'dsmsys'}");
-	cat("$AFSBACKUP/etc/hosts/$shorthostname/exclude.list", "$c{'dsmsys'}");
+	cat("$AFSBACKUP/etc/common/exclude.list", "$c{'tsm'}{'dsmsys'}");
+	cat("$AFSBACKUP/etc/hosts/$shorthostname/exclude.list", "$c{'tsm'}{'dsmsys'}");
 	close (DSMSYS);
 
 	# make sure a .backup volume exists for every volume
