@@ -602,10 +602,10 @@ sub mode_tsm {
 			printf DSMSYS "INCLUDE %s/.../* %s\n", $backup_paths{$v}, $policy_by_volume{$v};
 		}
 	}
+	close (DSMSYS);
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
 	cat("$AFSBACKUP/etc/common/exclude.list", "$c{'tsm'}{'dsmsys'}");
 	cat("$AFSBACKUP/etc/hosts/$shorthostname/exclude.list", "$c{'tsm'}{'dsmsys'}");
-	close (DSMSYS);
 
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
