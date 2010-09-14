@@ -390,6 +390,7 @@ sub get_vol_updatedate($) {
 
 # populates $r{'tsm_lastincrdate'}
 sub fetch_tsm_lastincrdate () {
+	print "Fetching Last Incr Date from TSM...\n";
 	$r{'tsm_lastincrdate'} = ();
 	my $count = 0;
 	foreach (`dsmc query filespace`) {
