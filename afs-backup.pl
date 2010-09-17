@@ -12,15 +12,24 @@ use Config::General;
 use VolmountsDB;
 use LockFile::Simple;
 
+my $version = '_GITVERSION_';
+
 my %opt = ();
 Getopt::Long::Configure('bundling');
 GetOptions(\%opt, 
+	'v|version',
 	'h', 
 	'help',
 	'mode=s',
 	'force-hostname=s',
 	'config=s'	
 );
+
+# print version
+if ($opt{'v'} or $opt{'version'}) {
+	print "$version\n";
+	exit 0;
+}
 
 # hostname stuff
 my $hostname;
@@ -32,7 +41,7 @@ if (defined $opt{'force-hostname'}) {
 my $shorthostname = $hostname;
 $shorthostname =~ s/\..*//;
 
-# AFSBACKUP
+# get AFSBACKUP environment variable
 my $AFSBACKUP = $ENV{'AFSBACKUP'};
 if ($AFSBACKUP !~ m/^\//) {
 	print "AFSBACKUP should really be an absolute path\n\n";
@@ -43,7 +52,7 @@ if (defined $opt{'help'}) {
 	exec('perldoc', '-t', $0) or die "Cannot feed myself to perldoc\n";
 	exit 0;
 } elsif (!defined $opt{'mode'} or $AFSBACKUP eq "" or defined $opt{'h'}) {
-	print "Usage: $0 [-h] [--help] [--force-hostname HOSTNAME] [--config /path/to/config]\n";
+	print "Usage: $0 ($version) [-h] [-v|--version] [--help] [--force-hostname HOSTNAME] [--config /path/to/config]\n";
 	print "-m|--mode [tsm|shadow|vosbackup|vosrelease|vosdump]\n\n";
 	print "\tAFSBACKUP -- root directory containing etc/ and var/\n";
 	print "\n";
@@ -92,8 +101,10 @@ my %c = $conf->getall;
 # runtime variable storage
 my %r = ();
 
+
 if (!$c{'quiet'}) {
-	print "= afs-backup.pl =\n\n";
+	print "= afs-backup.pl =\n";
+	print "version $version\n\n";
 }
 
 # lockfile
