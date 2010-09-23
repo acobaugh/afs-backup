@@ -98,6 +98,29 @@ if (!$conf) {
 my %c = $conf->getall;
 %c = process_config(%c);
 
+sub t_begin($) {
+	my ($msg) = @_;
+
+	if ($c{'timing'}) {
+		print "$msg ...";
+	}
+	return time();
+}
+
+sub t_end($) {
+	my ($starttime) = @_;
+
+	if ($c{'timing'}) {
+		my $delta_t = time - $starttime;
+		if ($delta_t > 5) {
+			printf "(%s s)\n", $delta_t;
+		} else {
+			print "\n";
+		}
+	}
+}
+
+
 # runtime variable storage
 my %r = ();
 
@@ -128,6 +151,8 @@ if ( ! defined $c{'lockfile'} ) {
 	print "'lockfile' not defined in config.\n";
 	exit 1;
 } 
+
+print "Obtaining lock $c{'lockfile'} ...\n";
 if ( ! $lock->lock($c{'lockfile'}) ) {
 	print "Could not lock $c{'lockfile'}\n";
 	exit 1;
@@ -152,9 +177,13 @@ if (!$vdb) {
 	print "Failed to connect to volmountsdb!\n";
 	exit 1;
 }
+
+my $t = t_begin("Fetching mounts from VolmountsDB");
 $vdb->fetch_mounts();
 my %mounts_by_path = $vdb->get_mounts_by_path();
 my %mounts_by_volume = $vdb->get_mounts_by_vol();
+t_end($t);
+print "\n";
 
 if (keys(%mounts_by_path) <= 0 or keys(%mounts_by_volume) <= 0) {
 	print "No mounts found! This is bad.\n";
@@ -178,10 +207,10 @@ if ($c{'verbose'}) {
 my $exit = 0;
 # switch over $mode
 if ($opt{'mode'} eq 'tsm') {
-	print "\nRequested mode tsm\n";
+	print "== tsm ==\n";
 	$exit = mode_tsm();
 } elsif ($opt{'mode'} eq 'vosbackup') {
-	print "\nRequested mode vosbackup\n";
+	print "== vosbackup ==\n";
 	$exit = mode_vosbackup();
 } else {
 	print "\nInvalid mode: $opt{'mode'}\n\n";
@@ -201,7 +230,8 @@ exit $exit;
 sub match_by_path(\%\%) {
 	my ($by_path, $r) = @_;
 	my (%return);
-	
+
+	my $t = t_begin("Matching by path");
 	foreach my $path (keys %$by_path) {
 		next if $by_path->{$path}{'mtpttype'} ne '#'; # we only want normal mountpoints
 		my $volume = $by_path->{$path}{'volname'};
@@ -224,6 +254,7 @@ sub match_by_path(\%\%) {
 			}
 		}
 	}
+	t_end($t);
 	return %return;
 }
 
@@ -232,7 +263,8 @@ sub match_by_path(\%\%) {
 sub match_by_volume(\%\%) {
 	my ($by_volume, $r) = @_;
 	my (%return);
-	
+
+	my $t = t_begin("Matching by volume");
 	foreach my $volume (keys %$by_volume) {
 		foreach my $regex (keys %$r) {
 			my $exclude_from_backup = 0;
@@ -249,6 +281,7 @@ sub match_by_volume(\%\%) {
 			}
 		}
 	}
+	t_end($t);
 	return %return, 
 }
 
@@ -288,8 +321,10 @@ sub exclude_matched(%) {
 sub exclude_lastbackup(\%$) {
 	my ($in, $mode) = @_;
 	my ($volume_to_check, %return);
+
+	my $t = t_begin("Excluding by lastbackup time");
 	foreach my $volume (sort keys %$in ) {
-		if ($c{'tsm'}{'dotbackup'}) {
+		if ($mode eq 'tsm' and $c{'tsm'}{'dotbackup'}) {
 			$volume_to_check = "$volume.backup";
 		} else {
 			$volume_to_check = $volume;
@@ -299,16 +334,16 @@ sub exclude_lastbackup(\%$) {
 		# backed up the .backup and the time we switched
 		if (get_vol_updatedate($volume_to_check) > get_lastbackup($mode, $volume)) {
 			$return{$volume} = 1;
-		} elsif ($c{'verbose'}) {
-			print "exclude_lastbackup() Skipping volume $volume ($volume_to_check)\n";
-		}
+		} 
 	}
+	t_end($t);
 	return %return;
 }
 
 ##
 ## miscellaneous functions
 ##
+
 
 # execute a command, return true if command exits 0, false otherwise
 sub cmd($) {
@@ -355,9 +390,9 @@ sub cmd($) {
 # other: use $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode
 sub get_lastbackup($$) {
 	my ($mode, $volume) = @_;
-	my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
+
 	if ($mode eq "vosbackup") {
-		foreach (`vos exam -format $volume 2>&1`) {
+		foreach (`vos exam -format $volume 2>/dev/null`) {
 			if (m/backupDate\s+(.+?)\s+.*$/) {
 				return $1;
 			}
@@ -373,6 +408,7 @@ sub get_lastbackup($$) {
 		}
 		return 0;
 	} else {
+		my $file = $AFSBACKUP . '/var/lastbackup/' . $volume . '.' . $mode;
 		if ( -e "$file") {
 			open (HANDLE, '<', $file) or print "cannot open file $file: $!\n";
 			local $_;
@@ -401,11 +437,12 @@ sub get_vol_updatedate($) {
 
 # populates $r{'tsm_lastincrdate'}
 sub fetch_tsm_lastincrdate () {
-	print "Fetching Last Incr Date from TSM...\n";
+	my $t = t_begin("Fetching Last Incr Dat from TSM");
 	$r{'tsm_lastincrdate'} = ();
 	my $count = 0;
 	foreach (`dsmc query filespace`) {
 		if ($_ =~ m/^No file spaces for node/) {
+			t_end($t);
 			return -1;
 		}
 		if (my ($month, $day, $year, $hour, $min, $sec, $fs) = 
@@ -432,6 +469,8 @@ sub fetch_tsm_lastincrdate () {
 			}
 		}
 	}
+	t_end($t);
+	printf "Fetched the Last Incr Date from TSM for %s filespaces\n", $count;
 	return $count;
 }
 
@@ -519,7 +558,6 @@ sub mode_tsm {
 
 	# fetch lastincrdate timestamps from tsm itself
 	my $tsm_fs_num = fetch_tsm_lastincrdate();
-	printf "Fetched the Last Incr Date from TSM for %s filespaces\n", $tsm_fs_num;
 	if ($c{'lastbackup'}) {
 		if ($tsm_fs_num > 0) {
 			%backup_matched = exclude_lastbackup(%backup_matched, 'tsm');
@@ -556,6 +594,7 @@ sub mode_tsm {
 		exit 1;
 	} 
 
+	my $t = t_begin("Determining MGMTCLASS to use for each filespace");
 	my %policy_by_volume;
 	# determine management class to use
 	foreach my $policy (split(/\s+/, $c{'tsm'}{'policy'}{'order'})) {
@@ -588,16 +627,9 @@ sub mode_tsm {
 			$policy_by_volume{$volume} = $c{'tsm'}{'policy'}{'default'};
 		}
 	}
-			
+	t_end($t);	
 
-	print "\n=== Paths/mountpoints to backup ===\n";
-	print "PATH | VOLUME | MGMTCLASS\n";
-	foreach my $volume (sort keys %backup_paths) {
-		printf "%s | %s | %s\n", $backup_paths{$volume}, $volume, $policy_by_volume{$volume};
-	}
-	print "TOTAL: " . keys(%backup_paths) . " volumes selected out of " . $backup_matched_num . " candidate volumes. \n";
-	print "There are " . keys(%mounts_by_volume) . " volumes total mounted within the cell.\n\n";
-
+	## write the include statements to dsm.sys
 	# default management class
 	if ($c{'tsm'}{'policy'}{'default'} ne "") {
 		printf DSMSYS "\n* Default management class (policy-default)\ninclude * %s\n\n", $c{'tsm'}{'policy'}{'default'};
@@ -614,9 +646,19 @@ sub mode_tsm {
 		}
 	}
 	close (DSMSYS);
+
 	# because dsmc uses bottom-up processing for include/exclude, stick our inclexcl file at the end of dsm.sys
 	cat("$AFSBACKUP/etc/common/exclude.list", "$c{'tsm'}{'dsmsys'}");
 	cat("$AFSBACKUP/etc/hosts/$shorthostname/exclude.list", "$c{'tsm'}{'dsmsys'}");
+	
+	print "\n=== Paths/mountpoints to backup ===\n";
+	print "PATH | VOLUME | MGMTCLASS\n";
+	foreach my $volume (sort keys %backup_paths) {
+		printf "%s | %s | %s\n", $backup_paths{$volume}, $volume, $policy_by_volume{$volume};
+	}
+	print "TOTAL: " . keys(%backup_paths) . " volumes selected out of " . $backup_matched_num . " candidate volumes. \n";
+	print "There are " . keys(%mounts_by_volume) . " volumes total mounted within the cell.\n\n";
+
 
 	# make sure a .backup volume exists for every volume
 	# vos backup if not
